@@ -1,0 +1,130 @@
+﻿{
+  "users": [
+    {
+      "id": "user-1",
+      "fullName": "Admin User",
+      "email": "admin@ipms.local",
+      "password": "admin123",
+      "role": "admin"
+    },
+    {
+      "id": "user-2",
+      "fullName": "Procurement Manager",
+      "email": "procurement@ipms.local",
+      "password": "procure123",
+      "role": "procurement"
+    },
+    {
+      "id": "user-3",
+      "fullName": "Inventory Manager",
+      "email": "inventory@ipms.local",
+      "password": "inventory123",
+      "role": "inventory"
+    },
+    {
+      "id": "user-4",
+      "fullName": "Engineer Lead",
+      "email": "engineer@ipms.local",
+      "password": "engineer123",
+      "role": "engineer"
+    },
+    {
+      "id": "user-5",
+      "fullName": "Finance Officer",
+      "email": "finance@ipms.local",
+      "password": "finance123",
+      "role": "finance"
+    }
+  ],
+  "kpis": [],
+  "inventorySummary": [],
+  "inventoryTabs": [],
+  "procurementSeries": [],
+  "categoryBreakdown": [],
+  "recentActivity": [],
+  "lowStock": [],
+  "categories": [],
+  "components": [
+    {
+      "id": 1,
+      "code": "CMP-101",
+      "name": "Stainless Steel Bolt",
+      "category": "Fasteners",
+      "spec": "M10 x 50mm",
+      "vendor": "Ram Metals"
+    },
+    {
+      "id": 2,
+      "code": "CMP-102",
+      "name": "Aluminum Sheet",
+      "category": "Raw Material",
+      "spec": "2mm thick, 1200x2400mm",
+      "vendor": "Ram Metals"
+    },
+    {
+      "id": 3,
+      "code": "CMP-103",
+      "name": "Copper Wire",
+      "category": "Electrical",
+      "spec": "2.5mm², 100m reel",
+      "vendor": "Ram Metals"
+    }
+  ],
+  "inDrone": [],
+  "scrap": [],
+  "vendors": [],
+  "purchaseOrders": [],
+  "boms": [],
+  "materialRequests": [],
+  "purchaseOrders": [
+    {
+      "id": 1,
+      "po": "PO-001",
+      "vendor": "Ram",
+      "items": 2,
+      "total": 5000,
+      "date": "2026-06-10",
+      "status": "ORDERED",
+      "lineItems": [
+        {
+          "id": 1,
+          "component": 1,
+          "componentName": "Stainless Steel Bolt",
+          "quantity": 100,
+          "unitPrice": 25,
+          "gst": 18
+        },
+        {
+          "id": 2,
+          "component": 2,
+          "componentName": "Aluminum Sheet",
+          "quantity": 5,
+          "unitPrice": 800,
+          "gst": 18
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "po": "PO-002",
+      "vendor": "Ram",
+      "items": 1,
+      "total": 2360,
+      "date": "2026-06-12",
+      "status": "ORDERED",
+      "lineItems": [
+        {
+          "id": 1,
+          "component": 3,
+          "componentName": "Copper Wire",
+          "quantity": 10,
+          "unitPrice": 200,
+          "gst": 18
+        }
+      ]
+    }
+  ],
+  "inward": [],
+  "outward": [],
+  "componentRequests": []
+}

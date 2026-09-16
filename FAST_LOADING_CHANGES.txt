@@ -1,0 +1,106 @@
+IPMS BACKEND FAST-LOADING PACKAGE
+
+This package is BACKWARD COMPATIBLE by default.
+
+Nothing changes for old frontend calls unless you explicitly use the new
+fast query parameters.
+
+FAST TABLE MODE
+===============
+
+Use:
+    ?summary=1&paginate=1&page_size=50
+
+Examples:
+
+Material Requests:
+    /api/materialrequest/material-requests/?summary=1&paginate=1&page_size=50
+
+Inventory:
+    /api/inventory/inventory/?summary=1&paginate=1&page_size=50
+
+Project Inventory:
+    /api/inventory/project-inventory/?summary=1&paginate=1&page_size=50
+
+Outward:
+    /api/outward/?summary=1&paginate=1&page_size=50
+
+Component Usage:
+    /api/component-usage/?summary=1&paginate=1&page_size=50
+
+Notifications:
+    /api/notifications/?paginate=1&page_size=50
+
+
+WHAT summary=1 DOES
+===================
+
+- skips serial-level cost calculation
+- skips large serial arrays on Inventory / Project Inventory / Outward
+- skips nested BOM/R&D/Request item payloads on MR list
+- skips large QC row JSON on Inward
+- skips issued serial / issue-detail JSON on Component Usage
+
+Use the normal detail endpoint when a user clicks one row.
+
+
+COMPONENT DROPDOWN
+==================
+
+New endpoint:
+
+    /api/components/components/lookup/?search=wing&page_size=20
+
+Returns only:
+- id
+- component_id
+- name
+- category
+- component_type
+- unit_of_measurements
+- is_active
+
+Maximum lookup response is 50 rows.
+
+
+PAGINATION
+==========
+
+Existing frontend:
+    no `paginate=1`
+    -> existing plain-array response is preserved
+
+New optimized frontend:
+    paginate=1
+    -> DRF response:
+       {
+         "count": ...,
+         "next": ...,
+         "previous": ...,
+         "results": [...]
+       }
+
+Default page size = 50
+Maximum page size = 100
+
+
+DATABASE
+========
+
+MySQL connections now use:
+    CONN_MAX_AGE = 60 seconds
+    CONN_HEALTH_CHECKS = True
+
+Override:
+    DATABASE_CONN_MAX_AGE=60
+
+
+IMPORTANT
+=========
+
+For the full speed improvement, update frontend table/dropdown calls gradually
+to use summary=1 and paginate=1.
+
+Do NOT change every page at once if a page currently depends on nested rows.
+Move page-by-page and use the normal detail endpoint when the user opens
+View Details / Cost Details / Serials.
