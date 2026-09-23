@@ -436,21 +436,42 @@ const [poForm, setPoForm] = useState({
   items: [],
 });
   const removeNotification = (id) => {
-    const cleanId = String(id);
+    const cleanId = String(id ?? "").trim();
 
+    if (!cleanId) {
+      return;
+    }
+
+    /*
+     * Persist the user's explicit Remove action.
+     * The Procurement list is reconstructed from backend MR data after every
+     * refresh, so hiding only React state is not enough. Store the stable MR
+     * key locally and apply hiddenIds to Procurement rows as well.
+     */
     setHiddenIds((prev) => {
-      if (prev.includes(cleanId)) return prev;
+      if (prev.includes(cleanId)) {
+        return prev;
+      }
 
       const updated = [...prev, cleanId];
+
       localStorage.setItem(
         `materialsNotificationsHidden:${role || "unknown"}`,
         JSON.stringify(updated)
       );
+
       return updated;
     });
 
     setNotifications((prev) =>
-      prev.filter((n) => String(n.id || n.material_request_id) !== cleanId)
+      prev.filter(
+        (n) =>
+          String(
+            n.id ||
+              n.material_request_id ||
+              ""
+          ).trim() !== cleanId
+      )
     );
   };
 
@@ -807,179 +828,6 @@ const loadLiveInventoryCounts = async () => {
   }
 };
 
-/*
- * FROM-SCRAP PROCUREMENT RULE
- * ---------------------------
- *
- * A generated _PR/_FR Material Request clones the complete source BOM/R&D
- * structure, but GOOD/reusable serials are already fulfilled from Scrap.
- * Those serials are stored on the cloned component row as:
- *
- *   FROM_SCRAP_SERIALS:SERIAL-1|SERIAL-2
- *
- * Procurement must never treat those recovered units as a new shortage.
- *
- * Example:
- *   Source component qty = 1
- *   FROM_SCRAP_SERIALS = one GOOD serial
- *   => Routing required qty = 0
- *   => component must NOT appear in Procurement / Raise PO.
- *
- * If no recovered serial exists for that component:
- *   Source component qty = 1
- *   => Routing required qty = 1
- *   => In Store first, then Procurement only for the remaining shortage.
- */
-
-const splitFromScrapSerials = (value) => {
-  if (Array.isArray(value)) {
-    return value
-      .flatMap(splitFromScrapSerials)
-      .filter(Boolean);
-  }
-
-  if (
-    value === undefined ||
-    value === null ||
-    value === ""
-  ) {
-    return [];
-  }
-
-  return String(value)
-    .split(/[|,;\n]/)
-    .map((serial) => serial.trim())
-    .filter(Boolean);
-};
-
-const getFromScrapRecoveredSerials = (
-  item = {}
-) => {
-  const direct = [
-    item?.from_scrap_serial_numbers,
-    item?.fromScrapSerialNumbers,
-    item?.recovered_serial_numbers,
-    item?.recoveredSerialNumbers,
-    item?.scrap_serial_numbers,
-  ]
-    .flatMap(splitFromScrapSerials)
-    .filter(Boolean);
-
-  if (direct.length) {
-    return Array.from(new Set(direct));
-  }
-
-  const remarks = String(
-    item?.remarks ||
-      item?.remark ||
-      item?.notes ||
-      ""
-  );
-
-  const match = remarks.match(
-    /FROM_SCRAP_SERIALS:([^\r\n]*)/i
-  );
-
-  if (!match) {
-    return [];
-  }
-
-  return Array.from(
-    new Set(
-      splitFromScrapSerials(
-        match[1]
-      )
-    )
-  );
-};
-
-const getMaterialRequestItems = (
-  request = {}
-) =>
-  [
-    request?.bom_items,
-    request?.custom_bom_items,
-    request?.rd_items,
-    request?.request_items,
-    request?.items,
-  ]
-    .filter(Array.isArray)
-    .flat()
-    .filter(Boolean);
-
-const isFromScrapProcurementRequest = (
-  request = {}
-) => {
-  const mrNumber = String(
-    request?.material_request_id ||
-      request?.request_id ||
-      request?.mr_number ||
-      ""
-  )
-    .trim()
-    .toUpperCase();
-
-  const requestRemarks = String(
-    request?.remarks || ""
-  ).toUpperCase();
-
-  const itemRemarks =
-    getMaterialRequestItems(request)
-      .map((item) =>
-        String(item?.remarks || "")
-      )
-      .join("\n")
-      .toUpperCase();
-
-  return (
-    mrNumber.endsWith("_PR") ||
-    mrNumber.endsWith("_FR") ||
-    requestRemarks.includes(
-      "FROM SCRAP"
-    ) ||
-    itemRemarks.includes(
-      "FROM_SCRAP_SERIALS:"
-    ) ||
-    itemRemarks.includes(
-      "SOURCE_SCRAP:"
-    )
-  );
-};
-
-const getFromScrapRoutingQuantity = (
-  item = {}
-) => {
-  const sourceRequestedQuantity =
-    Math.max(
-      Number(
-        item?.quantity ??
-          item?.qty ??
-          item?.requested_quantity ??
-          item?.required_quantity ??
-          0
-      ) || 0,
-      0
-    );
-
-  const recoveredSerials =
-    getFromScrapRecoveredSerials(
-      item
-    );
-
-  return {
-    sourceRequestedQuantity,
-    recoveredSerials,
-    recoveredQuantity:
-      recoveredSerials.length,
-    routingRequiredQuantity:
-      Math.max(
-        sourceRequestedQuantity -
-          recoveredSerials.length,
-        0
-      ),
-  };
-};
-
 const getRequestShortageRows = (
   request,
   counts = liveInventoryCounts,
@@ -1014,49 +862,11 @@ const getRequestShortageRows = (
 
   return items
     .map((item) => {
-      const sourceRequestedQty =
-        Math.max(
-          Number(
-            item.quantity ??
-              item.qty ??
-              item.requested_quantity ??
-              item.required_quantity ??
-              0
-          ) || 0,
-          0
-        );
-
-      const fromScrap =
-        isFromScrapProcurementRequest(
-          request
-        );
-
-      const fromScrapRouting =
-        fromScrap
-          ? getFromScrapRoutingQuantity(
-              item
-            )
-          : {
-              sourceRequestedQuantity:
-                sourceRequestedQty,
-              recoveredSerials: [],
-              recoveredQuantity: 0,
-              routingRequiredQuantity:
-                sourceRequestedQty,
-            };
-
-      /*
-       * For normal MRs this is the original requested qty.
-       * For From-Scrap _PR/_FR this is:
-       *
-       *   source qty - GOOD/reusable recovered serials
-       *
-       * Therefore fully recovered GOOD components become zero here and are
-       * automatically excluded from Procurement.
-       */
-      const requestedQty =
-        fromScrapRouting
-          .routingRequiredQuantity;
+      const requestedQty = Number(
+        item.quantity ??
+          item.qty ??
+          0,
+      );
 
       const rawSavedShortage =
         item.procurement_shortage_quantity ??
@@ -1105,17 +915,6 @@ const getRequestShortageRows = (
       let shortageQty = 0;
 
       if (
-        fromScrap &&
-        requestedQty <= 0
-      ) {
-        /*
-         * Fully recovered from GOOD Scrap serials.
-         * Ignore any stale shortage/reservation snapshot left on an older
-         * cloned MR row. This component requires neither Store nor PO.
-         */
-        inventoryQty = 0;
-        shortageQty = 0;
-      } else if (
         hasSavedShortageValue &&
         Number.isFinite(savedShortage) &&
         savedShortage > 0
@@ -1253,19 +1052,7 @@ const getRequestShortageRows = (
           item.category_name ||
           item.component_category ||
           "",
-        /*
-         * requestedQty is intentionally the quantity still requiring normal
-         * routing, not the full source-BOM quantity, for From-Scrap MRs.
-         */
         requestedQty,
-        sourceRequestedQty,
-        recoveredFromScrapQty:
-          fromScrapRouting
-            .recoveredQuantity,
-        recoveredFromScrapSerials:
-          fromScrapRouting
-            .recoveredSerials,
-        isFromScrap: fromScrap,
         inventoryQty,
         shortageQty,
       };
@@ -2404,8 +2191,19 @@ const loadNotifications = async (
             .trim()
             .toLowerCase() === "true";
 
+        /*
+         * Procurement must keep a fully PO-raised MR visible until the user
+         * explicitly removes it. Previously this returned false, so after the
+         * PO was created/reloaded the row disappeared or could later be
+         * reconstructed as Raise PO again.
+         *
+         * Required lifecycle:
+         *   shortage pending -> Raise PO
+         *   all shortage covered -> PO Raised + Remove
+         *   Remove clicked -> hide the row
+         */
         if (isPoRaised) {
-          return false;
+          return isProcurement;
         }
 
         if (isAdmin) {
@@ -2536,8 +2334,28 @@ const loadNotifications = async (
 };
 
 const fetchComponentById = async (id) => {
+  /*
+   * DRF detail URLs use the database primary key.
+   *
+   * Values such as AC_0002 / AF_0001 / EL_0003 are business Component IDs,
+   * not numeric database PKs. Sending those values to:
+   *
+   *   /components/components/<value>/
+   *
+   * produces the repeated 404s seen in the console. Non-numeric component
+   * codes are resolved by fetchComponentBySearch() instead.
+   */
+  const value = String(id ?? "").trim();
+
+  if (!/^\d+$/.test(value)) {
+    return null;
+  }
+
   try {
-    const res = await fetch(`${config.baseURL}/components/components/${encodeURIComponent(id)}/`);
+    const res = await fetch(
+      `${config.baseURL}/components/components/${encodeURIComponent(value)}/`,
+    );
+
     if (!res.ok) return null;
     return await res.json();
   } catch (err) {
@@ -2579,14 +2397,32 @@ const resolveMissingComponentNames = async (notifList) => {
   const normUpdates = {};
 
   for (const key of missing) {
-    // try direct fetch by id first
-    let comp = await fetchComponentById(key);
-    if (!comp) comp = await fetchComponentBySearch(key);
+    const isNumericPrimaryKey =
+      /^\d+$/.test(String(key).trim());
+
+    // Numeric values can be real database PKs. Business IDs such as
+    // AC_0002 / AF_0001 / EL_0003 must use search instead of the detail URL.
+    let comp = isNumericPrimaryKey
+      ? await fetchComponentById(key)
+      : await fetchComponentBySearch(key);
+
+    if (!comp && isNumericPrimaryKey) {
+      comp = await fetchComponentBySearch(key);
+    }
+
     if (!comp) {
-      // try without CMP- prefix or with it
       const plain = String(key).replace(/^CMP-?/i, "");
+
       if (plain && plain !== key) {
-        comp = await fetchComponentById(plain) || await fetchComponentBySearch(plain);
+        const plainIsNumeric =
+          /^\d+$/.test(plain);
+
+        comp = plainIsNumeric
+          ? (
+              await fetchComponentById(plain) ||
+              await fetchComponentBySearch(plain)
+            )
+          : await fetchComponentBySearch(plain);
       }
     }
 
@@ -2880,7 +2716,7 @@ const fetchAuthoritativeMrShortageRows = async (
       ? data.components
       : [];
 
-  const mappedRows = rows.map((row) => ({
+  const authoritativeRows = rows.map((row) => ({
     component_pk:
       row.component_id,
 
@@ -2932,71 +2768,123 @@ const fetchAuthoritativeMrShortageRows = async (
       ),
   }));
 
+  /*
+   * PR / FR REORDER MRs ARE INDEPENDENT PROCUREMENT DEMAND.
+   *
+   * Examples:
+   *   MR-260915-00004
+   *   MR-260915-00004_PR
+   *   MR-260915-00004_FR
+   *   MR-260915-00002_PR_PR
+   *
+   * A PO raised for the parent/original MR must NEVER consume the shortage
+   * of a later PR/FR child MR. Each exact material_request_id is its own
+   * procurement source.
+   *
+   * Some older backend mr-shortage-summary implementations incorrectly
+   * return remaining_quantity=0 for these generated child MRs. When that
+   * happens, use the child MR's own saved reservation/shortage snapshot
+   * instead of showing the false "all shortage components already have PO"
+   * message.
+   */
+  const isReorderChildMr =
+    /_(?:PR|FR)(?:_(?:PR|FR))*$/i.test(
+      String(sourceMrNumber || "").trim()
+    );
+
+  const hasAuthoritativeRemaining =
+    authoritativeRows.some(
+      (row) =>
+        Number(
+          row.remainingShortageQuantity ||
+            row.shortageQty ||
+            0
+        ) > 0
+    );
+
   if (
-    !isFromScrapProcurementRequest(
-      request
-    )
+    isReorderChildMr &&
+    !hasAuthoritativeRemaining
   ) {
-    return mappedRows;
+    const childShortageRows =
+      getRequestShortageRows(request);
+
+    if (childShortageRows.length > 0) {
+      const allPurchaseOrders =
+        await fetchAllPurchaseOrders().catch(
+          () => []
+        );
+
+      /*
+       * IMPORTANT: exact source MR match only.
+       * Do not strip _PR/_FR and do not compare against the parent MR.
+       */
+      const exactChildOrders =
+        allPurchaseOrders.filter(
+          (order) =>
+            getPurchaseOrderMrNumber(order) ===
+            String(sourceMrNumber).trim()
+        );
+
+      const orderedQuantityMap =
+        buildOrderedQuantityMap(
+          exactChildOrders,
+          sourceMrNumber
+        );
+
+      return childShortageRows
+        .map((row) => {
+          const originalShortageQuantity =
+            Math.max(
+              Number(
+                row.shortageQty ??
+                  row.originalShortageQuantity ??
+                  0
+              ),
+              0
+            );
+
+          const alreadyOrderedQuantity =
+            Math.max(
+              0,
+              ...getRequestRowComponentKeys(
+                row
+              ).map((key) =>
+                Number(
+                  orderedQuantityMap.get(key) ||
+                    0
+                )
+              )
+            );
+
+          const remainingShortageQuantity =
+            Math.max(
+              originalShortageQuantity -
+                alreadyOrderedQuantity,
+              0
+            );
+
+          return {
+            ...row,
+            originalShortageQuantity,
+            alreadyOrderedQuantity:
+              Math.min(
+                alreadyOrderedQuantity,
+                originalShortageQuantity
+              ),
+            remainingShortageQuantity,
+            shortageQty:
+              remainingShortageQuantity,
+          };
+        })
+        .filter(
+          (row) =>
+            row.remainingShortageQuantity > 0
+        );
+    }
   }
 
-  /*
-   * Safety overlay for generated From-Scrap MRs.
-   *
-   * mr-shortage-summary remains authoritative for Store / PO quantities.
-   * We only remove rows that the generated MR itself proves are already
-   * fulfilled by GOOD Scrap serials.
-   */
-  const routingRows =
-    getRequestShortageRows(
-      request
-    );
-
-  const routingKeys = new Set(
-    routingRows.flatMap((row) =>
-      [
-        row?.component_pk,
-        row?.component_code,
-      ]
-        .filter(
-          (value) =>
-            value !== undefined &&
-            value !== null &&
-            String(value).trim()
-        )
-        .map(
-          (value) =>
-            normalizeComponentKey(
-              value
-            )
-        )
-        .filter(Boolean)
-    )
-  );
-
-  return mappedRows.filter((row) => {
-    const rowKeys = [
-      row?.component_pk,
-      row?.component_code,
-    ]
-      .filter(
-        (value) =>
-          value !== undefined &&
-          value !== null &&
-          String(value).trim()
-      )
-      .map(
-        (value) =>
-          normalizeComponentKey(
-            value
-          )
-      )
-      .filter(Boolean);
-
-    return rowKeys.some((key) =>
-      routingKeys.has(key)
-    );
-  });
+  return authoritativeRows;
 };
 
 
@@ -4985,7 +4873,8 @@ const handleMrBomClick = async (request) => {
       <div className="bg-white dark:bg-gray-900 border rounded-xl overflow-hidden">
 
         {/* HEADER */}
-        <div className="grid grid-cols-8 bg-slate-100 dark:bg-slate-900 text-xs uppercase tracking-[0.08em] text-slate-500 dark:text-slate-400 px-4 py-3 items-center">
+        <div className="grid grid-cols-9 bg-slate-100 dark:bg-slate-900 text-xs uppercase tracking-[0.08em] text-slate-500 dark:text-slate-400 px-4 py-3 items-center">
+          <div className="text-center">S.No</div>
           <div className="">Requester</div>
           <div className="">MR ID</div>
           <div className="">Date</div>
@@ -5013,7 +4902,6 @@ const handleMrBomClick = async (request) => {
 {!loading && notifications
   .filter(
     (n) =>
-      isProcurement ||
       !hiddenIds.includes(
         String(
           n.id ||
@@ -5021,7 +4909,7 @@ const handleMrBomClick = async (request) => {
         )
       )
   )
-  .map((n) => {
+  .map((n, index) => {
  const approvalStatus = String(
   n.approval_status || ""
 )
@@ -5048,8 +4936,9 @@ const status = isProcurement
   return (
     <React.Fragment key={n.id || n.material_request_id}>
       <div
-        className="grid grid-cols-8 px-4 py-3 items-center hover:bg-slate-50 transition-colors dark:hover:bg-slate-800"
+        className="grid grid-cols-9 px-4 py-3 items-center hover:bg-slate-50 transition-colors dark:hover:bg-slate-800"
       >
+      <div className="text-center font-semibold">{index + 1}</div>
       <div>{n.requester_name || "-"}</div>
 
       <div className="font-medium text-slate-700 dark:text-slate-200">
@@ -5066,9 +4955,7 @@ const status = isProcurement
     onClick={() => handleMrBomClick(n)}
     className="px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-xs font-medium hover:bg-blue-100 hover:text-blue-600 transition"
   >
-    {isFromScrapProcurementRequest(n)
-      ? "From Scrap"
-      : n.request_type || "MR"}
+    {n.request_type || "MR"}
   </button>
 
 </div>
@@ -5136,7 +5023,13 @@ const status = isProcurement
   isProcurement &&
   workflowStatus ===
     "PROCUREMENT_PENDING" &&
-  !n.po_raised
+  !(
+    n.po_raised === true ||
+    n.po_raised === 1 ||
+    String(n.po_raised || "")
+      .trim()
+      .toLowerCase() === "true"
+  )
 ) && (
   <button
     type="button"
@@ -5149,7 +5042,13 @@ const status = isProcurement
     Raise PO
   </button>
 )}
-        {n.po_raised && (
+        {(
+          n.po_raised === true ||
+          n.po_raised === 1 ||
+          String(n.po_raised || "")
+            .trim()
+            .toLowerCase() === "true"
+        ) && (
           <div className="flex items-center gap-2">
             <span className="px-3 py-1 text-xs bg-blue-100 text-blue-800 rounded dark:bg-blue-900 dark:text-blue-200">
               PO Raised
@@ -5213,16 +5112,14 @@ const status = isProcurement
       </div>
     </div>
       {shortageRows.length > 0 && (
-        <div className="col-span-8 px-4 pb-4 bg-slate-50 dark:bg-slate-900">
+        <div className="col-span-9 px-4 pb-4 bg-slate-50 dark:bg-slate-900">
           <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-950">
             <table className="w-full text-sm">
                 <thead className="bg-slate-100 text-left text-slate-700 dark:bg-slate-800 dark:text-slate-200">
                   <tr>
                     <th className="px-4 py-3">Component</th>
                     <th className="px-4 py-3">Category</th>
-                    <th className="px-4 py-3 text-center">
-                          {isProcurement ? "Required for Routing" : "Requested"}
-                        </th>
+                    <th className="px-4 py-3 text-center">Requested</th>
                     <th className="px-4 py-3 text-center">Inventory</th>
 
                     {isProcurement && (
@@ -5285,7 +5182,8 @@ const status = isProcurement
 
       {activeTab === "QC_FAILED" && isProcurement && (
         <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-          <div className="grid grid-cols-[0.8fr_1.05fr_1.05fr_1.6fr_0.65fr_1fr_1.65fr] items-center border-b border-border bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          <div className="grid grid-cols-[0.4fr_0.8fr_1.05fr_1.05fr_1.6fr_0.65fr_1fr_1.65fr] items-center border-b border-border bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <div className="text-center">S.No</div>
             <div>Action Type</div>
             <div>MR ID</div>
             <div>Source PO</div>
@@ -5306,7 +5204,7 @@ const status = isProcurement
                 No QC Failed requests for Procurement.
               </div>
             ) : (
-              qcFailedNotifications.map((row) => {
+              qcFailedNotifications.map((row, index) => {
                 const rowKey = String(
                   row?.id ||
                     row?.sourceId ||
@@ -5356,8 +5254,9 @@ const status = isProcurement
                 return (
                   <div
                     key={rowKey}
-                    className="grid grid-cols-[0.8fr_1.05fr_1.05fr_1.6fr_0.65fr_1fr_1.65fr] items-center px-4 py-4 text-sm hover:bg-muted/20"
+                    className="grid grid-cols-[0.4fr_0.8fr_1.05fr_1.05fr_1.6fr_0.65fr_1fr_1.65fr] items-center px-4 py-4 text-sm hover:bg-muted/20"
                   >
+                    <div className="text-center font-semibold">{index + 1}</div>
                     <div className="font-semibold">
                       {row?.requestLabel ||
                         "QC Failed"}
@@ -5785,7 +5684,7 @@ Totals items:
       </h2>
 
       <p className="text-slate-600 dark:text-slate-300 mb-4">
-        Only components still requiring fulfillment after GOOD / reusable From-Scrap serials and In-Store reservation are shown below.
+        The following components have inventory less than the requested quantity.
       </p>
 
       <div className="border rounded-lg overflow-x-auto mb-5">
@@ -5795,7 +5694,7 @@ Totals items:
               <th className="px-3 py-2 text-left">Component</th>
               <th className="px-3 py-2 text-left">Category</th>
               <th className="px-3 py-2 text-center">
-                Required for PO
+                Requested
               </th>
               <th className="px-3 py-2 text-center">
                 Available

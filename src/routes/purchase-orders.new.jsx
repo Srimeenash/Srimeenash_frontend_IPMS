@@ -172,6 +172,7 @@ const PurchaseOrdersPage = () => {
   const [showComponentModal, setShowComponentModal] = useState(false);
   const [componentForm, setComponentForm] = useState({
     component_id: "AC_0001",
+    version: "",
     category: CATEGORY_CHOICES[0],
     component_type: "",
     specifications: "",
@@ -291,17 +292,47 @@ const PurchaseOrdersPage = () => {
       }));
     }
 
+    const hsnNumber = String(
+      componentForm.hsn_no || ""
+    ).trim();
+
+    /*
+     * Backend Component validation accepts HSN only when it contains
+     * exactly 4-8 digits. An empty string was previously POSTed as
+     * hsn_numbers: "" and Django rejected the whole component with HTTP 400.
+     *
+     * Blank HSN is optional: omit hsn_numbers completely.
+     */
+    if (
+      hsnNumber &&
+      !/^\d{4,8}$/.test(hsnNumber)
+    ) {
+      alert(
+        "HSN.No must contain 4 to 8 digits, or leave it blank."
+      );
+      return;
+    }
+
     const payload = {
       component_id: componentId,
+      version: String(componentForm.version || "").trim(),
       category: componentForm.category,
       component_type: componentType,
-      specifications: componentForm.specifications,
-      unit_of_measurements: componentForm.unit_of_measurements,
-      hsn_numbers: componentForm.hsn_no,
-      sku_numbers: componentForm.sku_no,
-      part_numbers: componentForm.part_no,
-      tally_reference: componentForm.tally_reference,
-      product_link: componentForm.product_link,
+      specifications: String(
+        componentForm.specifications || ""
+      ).trim(),
+      sku_numbers: String(
+        componentForm.sku_no || ""
+      ).trim(),
+      part_numbers: String(
+        componentForm.part_no || ""
+      ).trim(),
+      tally_reference: String(
+        componentForm.tally_reference || ""
+      ).trim(),
+      product_link: String(
+        componentForm.product_link || ""
+      ).trim(),
       ordering_id: null,
       unit_price: 0,
       stock_quantity: 0,
@@ -309,23 +340,28 @@ const PurchaseOrdersPage = () => {
       is_active: true,
     };
 
+    if (hsnNumber) {
+      payload.hsn_numbers = hsnNumber;
+    }
+
     try {
-      const res = await fetch(`${config.baseURL}/components/components/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
+      const data = await fetchAuthenticatedJson(
+        `${config.baseURL}/components/components/`,
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
+      );
 
-      if (!res.ok) {
-        console.error("Failed to create component", data);
-        alert("Failed to add component");
-        return;
-      }
-
-      alert("Component added successfully");
+      alert(
+        `Component ${
+          data?.component_id ||
+          componentId
+        } added successfully`
+      );
       setComponentForm({
         component_id: "AC_0001",
+        version: "",
         category: CATEGORY_CHOICES[0],
         component_type: "",
         specifications: "",
@@ -338,10 +374,10 @@ const PurchaseOrdersPage = () => {
       });
       setShowComponentModal(false);
 
-      const listRes = await fetch(`${config.baseURL}/components/components/`, {
-        headers: { "Content-Type": "application/json" },
-      });
-      const listData = await listRes.json();
+      const listData = await fetchAuthenticatedJson(
+        `${config.baseURL}/components/components/?page_size=5000`,
+        { cache: "no-store" },
+      );
       setComponentsList(
         (listData?.results || listData || []).map((c) => ({
           id: c.id,
@@ -355,8 +391,16 @@ const PurchaseOrdersPage = () => {
         }))
       );
     } catch (error) {
-      console.error(error);
-      alert("Error adding component");
+      console.error(
+        "Failed to create component:",
+        error,
+      );
+
+      alert(
+        error?.message ||
+        error?.detail ||
+        "Error adding component"
+      );
     }
   };
 
@@ -1224,7 +1268,7 @@ const PurchaseOrdersPage = () => {
                                   setShowComponentModal(true);
                                 },
                                 className: "rounded-md bg-primary px-3 py-2 text-sm text-white hover:bg-primary/90",
-                                children: "+ Add Component"
+                                children: "+ New Component"
                               }),
                               _jsx("button", {
                                 type: "button",
@@ -1569,12 +1613,13 @@ const PurchaseOrdersPage = () => {
                   children: [
                     _jsx("h2", {
                       className: "text-xl font-semibold mb-6 text-slate-900 dark:text-slate-100",
-                      children: "Add New Component"
+                      children: "New Component"
                     }),
                     _jsxs(FormGrid, {
                       children: [
                         _jsx(Field, {
                           label: "Component ID",
+                          required: true,
                           children: _jsx(Input, {
                             name: "component_id",
                             value: componentForm.component_id,
@@ -1582,7 +1627,16 @@ const PurchaseOrdersPage = () => {
                           })
                         }),
                         _jsx(Field, {
+                          label: "Version",
+                          children: _jsx(Input, {
+                            name: "version",
+                            value: componentForm.version || "",
+                            onChange: handleComponentChange
+                          })
+                        }),
+                        _jsx(Field, {
                           label: "Category",
+                          required: true,
                           children: _jsx(Select, {
                             name: "category",
                             value: componentForm.category,
@@ -1592,6 +1646,7 @@ const PurchaseOrdersPage = () => {
                         }),
                         _jsx(Field, {
                           label: "Component Type",
+                          required: true,
                           children: _jsx(Input, {
                             name: "component_type",
                             value: componentForm.component_type,
@@ -1608,7 +1663,19 @@ const PurchaseOrdersPage = () => {
                           })
                         }),
                         _jsx(Field, {
-                          label: "SKU No",
+                          label: "HSN.No",
+                          children: _jsx(Input, {
+                            name: "hsn_no",
+                            value: componentForm.hsn_no,
+                            onChange: handleComponentChange,
+                            inputMode: "numeric",
+                            pattern: "\\d{4,8}",
+                            minLength: 4,
+                            maxLength: 8
+                          })
+                        }),
+                        _jsx(Field, {
+                          label: "SKU.No",
                           children: _jsx(Input, {
                             name: "sku_no",
                             value: componentForm.sku_no,
@@ -1616,7 +1683,7 @@ const PurchaseOrdersPage = () => {
                           })
                         }),
                         _jsx(Field, {
-                          label: "Part No",
+                          label: "Part.No",
                           children: _jsx(Input, {
                             name: "part_no",
                             value: componentForm.part_no,
@@ -1628,14 +1695,6 @@ const PurchaseOrdersPage = () => {
                           children: _jsx(Input, {
                             name: "tally_reference",
                             value: componentForm.tally_reference,
-                            onChange: handleComponentChange
-                          })
-                        }),
-                        _jsx(Field, {
-                          label: "UOM",
-                          children: _jsx(Input, {
-                            name: "unit_of_measurements",
-                            value: componentForm.unit_of_measurements,
                             onChange: handleComponentChange
                           })
                         }),

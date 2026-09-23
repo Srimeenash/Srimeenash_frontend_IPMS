@@ -210,7 +210,23 @@ const getItemExpectedDelivery = (
 const normalizeStatus = (value) =>
   String(value || "")
     .trim()
-    .toUpperCase();
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+// These statuses mean the original PO lifecycle is complete.
+// PDF/Generate PO controls must not be available for them.
+const PO_GENERATION_BLOCKED_STATUSES = new Set([
+  "DELIVERED",
+  "REPLACEMENT_DELIVERED",
+  "REPLACEMENT_ISSUED",
+  "REPLACEMENT_RECEIVED",
+  "REPLACEMENT_RECEIVED_INVENTORY_ISSUED",
+  "REPLACEMENT_DELIVERY_INVENTORY_ISSUED",
+]);
+
+const isPoGenerationBlockedStatus = (value) =>
+  PO_GENERATION_BLOCKED_STATUSES.has(normalizeStatus(value));
 
 const statusClass = (status) => {
   const value = normalizeStatus(status);
@@ -400,6 +416,54 @@ export default function PurchaseOrderDetailPage() {
     [po],
   );
 
+  // Approval status and delivery/lifecycle status are different.
+  // Prefer any completed lifecycle status over FINANCE_APPROVED so the
+  // detail page matches the Purchase Order list page.
+  const resolvedPoStatus = useMemo(() => {
+    const statusCandidates = [
+      po?.delivery_status,
+      po?.replacement_status,
+      po?.current_status,
+      po?.inward_status,
+      po?.status,
+      ...(Array.isArray(items)
+        ? items.flatMap((item) => [
+            item?.delivery_status,
+            item?.replacement_status,
+            item?.current_status,
+            item?.inward_status,
+            item?.status,
+          ])
+        : []),
+    ].filter(
+      (value) =>
+        value !== null &&
+        value !== undefined &&
+        String(value).trim() !== "",
+    );
+
+    const completedStatus =
+      statusCandidates.find(isPoGenerationBlockedStatus);
+
+    if (completedStatus) {
+      return completedStatus;
+    }
+
+    return (
+      po?.status ||
+      po?.delivery_status ||
+      po?.current_status ||
+      po?.approval_status ||
+      "PENDING"
+    );
+  }, [po, items]);
+
+  const isPoGenerationBlocked =
+    isPoGenerationBlockedStatus(resolvedPoStatus);
+
+  const canGeneratePo =
+    !isManagement && !isPoGenerationBlocked;
+
   const itemExpectedDeliveryDates =
     useMemo(
       () =>
@@ -432,8 +496,12 @@ export default function PurchaseOrderDetailPage() {
 
 
   const selectableItemIds = useMemo(
-    () =>
-      items
+    () => {
+      if (isPoGenerationBlocked) {
+        return [];
+      }
+
+      return items
         .map((item) =>
           item?.id ??
           item?.po_item_id ??
@@ -446,8 +514,9 @@ export default function PurchaseOrderDetailPage() {
             value !== undefined &&
             value !== ""
         )
-        .map(String),
-    [items],
+        .map(String);
+    },
+    [items, isPoGenerationBlocked],
   );
 
   useEffect(() => {
@@ -496,6 +565,13 @@ export default function PurchaseOrderDetailPage() {
 
   const generateSelectedPurchaseOrderPdf =
     async () => {
+      if (isPoGenerationBlocked) {
+        alert(
+          "This Purchase Order is already completed. Generate PO is not available."
+        );
+        return;
+      }
+
       if (
         selectedItemIds.length === 0 ||
         generatingPdf
@@ -738,14 +814,11 @@ export default function PurchaseOrderDetailPage() {
 
               <span
                 className={`inline-flex w-fit rounded-full border px-4 py-2 text-xs font-semibold ${statusClass(
-                  po.approval_status ||
-                    po.status,
+                  resolvedPoStatus,
                 )}`}
               >
                 {normalizeStatus(
-                  po.approval_status ||
-                    po.status ||
-                    "PENDING",
+                  resolvedPoStatus,
                 ).replaceAll("_", " ")}
               </span>
             </div>
@@ -805,12 +878,14 @@ export default function PurchaseOrderDetailPage() {
                 <p className="text-sm text-muted-foreground">
                   {isManagement
                     ? "View Purchase Order components and approved costing."
-                    : "Select one or more components, then generate one Purchase Order PDF."}
+                    : isPoGenerationBlocked
+                      ? "Purchase Order completed. PDF generation is no longer available."
+                      : "Select one or more components, then generate one Purchase Order PDF."}
                 </p>
               </div>
             </div>
 
-            {!isManagement && (
+            {canGeneratePo && (
               <button
                 type="button"
                 onClick={() =>
@@ -837,7 +912,7 @@ export default function PurchaseOrderDetailPage() {
             <table className="po-items po-detail-items text-sm">
               <thead className="bg-secondary/60 text-muted-foreground">
                 <tr>
-                  {!isManagement && (
+                  {canGeneratePo && (
                     <th className="w-[56px] px-4 py-3 text-center">
                       <input
                         type="checkbox"
@@ -886,7 +961,7 @@ export default function PurchaseOrderDetailPage() {
                         }
                         className="hover:bg-secondary/30"
                       >
-                        {!isManagement && (
+                        {canGeneratePo && (
                           <td data-label="Select component" className="px-4 py-3 text-center">
                             {(() => {
                               const itemId =
@@ -995,7 +1070,7 @@ export default function PurchaseOrderDetailPage() {
                 ) : (
                   <tr>
                     <td
-                      colSpan={(isManagement ? 4 : 5) + (canSeeCosting ? 6 : 0)}
+                      colSpan={(canGeneratePo ? 5 : 4) + (canSeeCosting ? 6 : 0)}
                       className="px-4 py-10 text-center text-muted-foreground"
                     >
                       No Purchase Order line items found.

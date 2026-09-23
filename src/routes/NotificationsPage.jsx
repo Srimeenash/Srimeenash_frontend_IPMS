@@ -630,6 +630,76 @@ const [
     };
   }, []);
 
+/*
+ * Manager MR Type must match the Material Requests page.
+ *
+ * BOM + customized_bom=true  -> Custom BOM
+ * BOM + customized_bom=false -> BOM
+ * R&D / RD                   -> R & D
+ *
+ * Other request types keep their existing labels.
+ */
+const getManagerMrTypeLabel = (request = {}) => {
+  const requestType = String(
+    request?.request_type ||
+      request?.requestType ||
+      ""
+  )
+    .trim()
+    .toUpperCase();
+
+  const rawCustomizedBom =
+    request?.customized_bom ??
+    request?.customizedBom ??
+    false;
+
+  const isCustomizedBom =
+    rawCustomizedBom === true ||
+    rawCustomizedBom === 1 ||
+    String(rawCustomizedBom)
+      .trim()
+      .toLowerCase() === "true" ||
+    String(rawCustomizedBom).trim() === "1";
+
+  if (requestType === "BOM") {
+    return isCustomizedBom
+      ? "Custom BOM"
+      : "BOM";
+  }
+
+  if (
+    requestType === "R&D" ||
+    requestType === "RD"
+  ) {
+    return "R & D";
+  }
+
+  if (requestType === "RETURNABLE") {
+    return String(
+      request?.returnable_purpose ||
+        request?.returnablePurpose ||
+        "Returnable"
+    )
+      .replaceAll("_", " ")
+      .toLowerCase()
+      .replace(
+        /\b\w/g,
+        (letter) => letter.toUpperCase()
+      );
+  }
+
+  if (requestType === "RETAIL_SALES") {
+    return "Retail Sales";
+  }
+
+  return (
+    request?.request_type ||
+    request?.requestType ||
+    "-"
+  );
+};
+
+
 const normalizeRequestStatus = (item) => {
   let rawStatus = String(
     item.approval_status || item.status || "NOT_REQUESTED"
@@ -3322,6 +3392,10 @@ if (isInventory) {
             request?.request_type ||
             request?.requestType ||
             "",
+          customized_bom:
+            request?.customized_bom ??
+            request?.customizedBom ??
+            false,
           returnable_purpose:
             request?.returnable_purpose ||
             request?.returnablePurpose ||
@@ -3759,6 +3833,13 @@ if (isInventory) {
 
               request_type:
                 requestType,
+
+              customized_bom:
+                mr.customized_bom ??
+                mr.customizedBom ??
+                n.customized_bom ??
+                n.customizedBom ??
+                false,
 
               drone_quantity:
                 droneQuantity,
@@ -5957,6 +6038,52 @@ if (isInventory) {
         ? "usage-approval"
         : "return-approval";
 
+      /*
+       * Verify the authoritative ComponentUsage detail before POSTing.
+       * This prevents a stale Manager notification from submitting an action
+       * that another tab/session has already processed.
+       */
+      if (isDroneUsageApproval) {
+        try {
+          const latestUsage =
+            await fetchAuthenticatedJson(
+              `${config.baseURL}/component-usage/${encodeURIComponent(
+                usageId,
+              )}/`,
+              {
+                cache: "no-store",
+              },
+            );
+
+          const latestApprovalState = String(
+            latestUsage?.return_approval_status || "",
+          )
+            .trim()
+            .toUpperCase();
+
+          if (
+            latestApprovalState &&
+            latestApprovalState !== "PENDING_MANAGER"
+          ) {
+            invalidateNotificationLoadingCache();
+            await loadNotifications();
+
+            window.dispatchEvent(
+              new Event("notificationsUpdated"),
+            );
+            window.dispatchEvent(
+              new Event("inventory:changed"),
+            );
+            return;
+          }
+        } catch (precheckError) {
+          console.warn(
+            "Unable to pre-check Returnable Manager approval; backend will verify it:",
+            precheckError,
+          );
+        }
+      }
+
       await fetchAuthenticatedJson(
         `${config.baseURL}/component-usage/${encodeURIComponent(usageId)}/${endpoint}/`,
         {
@@ -5989,12 +6116,54 @@ if (isInventory) {
         ),
       );
 
+      invalidateNotificationLoadingCache();
+
       window.dispatchEvent(new Event("notificationsUpdated"));
       window.dispatchEvent(new Event("inventory:changed"));
       await loadNotifications();
     } catch (error) {
-      console.error("Returnable Manager approval failed:", error);
-      alert(error?.message || "Unable to process Returnable approval.");
+      const message = String(
+        error?.message ||
+          "Unable to process Returnable approval.",
+      );
+
+      const normalizedMessage =
+        message.trim().toLowerCase();
+
+      const alreadyProcessed =
+        normalizedMessage.includes(
+          "not pending manager approval anymore",
+        ) ||
+        normalizedMessage.includes(
+          "not waiting for manager approval",
+        ) ||
+        normalizedMessage.includes(
+          "already processed",
+        );
+
+      if (alreadyProcessed) {
+        console.info(
+          "Returnable Manager action was already processed; refreshing latest state:",
+          message,
+        );
+
+        invalidateNotificationLoadingCache();
+        await loadNotifications();
+
+        window.dispatchEvent(
+          new Event("notificationsUpdated"),
+        );
+        window.dispatchEvent(
+          new Event("inventory:changed"),
+        );
+        return;
+      }
+
+      console.error(
+        "Returnable Manager approval failed:",
+        error,
+      );
+      alert(message);
     } finally {
       endNotificationAction(actionKey);
     }
@@ -6058,11 +6227,11 @@ if (isInventory) {
         yesTitle:
           "YES — Restore / Replace",
         yesDescription:
-          "Send directly to Procurement to raise the replacement PO. Finance is notified only after Procurement raises the PO.",
+          "Record REBUILD / REORDER for Finance approval. Only after Finance approves will the PR/FR be created. GOOD serials stay pre-fulfilled in that child MR; only missing quantity is checked against In Store, and Procurement receives only the remaining shortage.",
         noTitle:
           "NO — Final Scrap",
         noDescription:
-          "Send directly to Finance for QC-failed Scrap approval. Procurement is not involved.",
+          "Send the Scrap / Do Not Rebuild decision to Finance. After Finance approves, GOOD serials return to In Store and BAD serials remain in Failed QC with Restore action.",
       };
     }
 
@@ -6078,11 +6247,11 @@ if (isInventory) {
         yesTitle:
           "YES — Reorder / Rebuild",
         yesDescription:
-          "Create the PR/FR child MR and send the failed quantities directly to Procurement. Finance is notified only after the replacement PO is raised.",
+          "Send the REBUILD decision to Finance first. After Finance approves, create _PR when reusable GOOD parts exist or _FR when all parts failed. GOOD serials stay in the new MR; missing quantity checks In Store first and only shortage goes to Procurement.",
         noTitle:
           "NO — Final Scrap",
         noDescription:
-          "Send the failed components directly to Finance for Scrap approval. GOOD components already passed Return QC and stay in In Store.",
+          "Send the Scrap / Do Not Rebuild decision to Finance. No rebuild MR is created. After Finance approves, GOOD serials move back to In Store and BAD serials remain Failed QC with Restore action.",
       };
     }
 
@@ -6360,7 +6529,8 @@ if (isInventory) {
     {currentTab === "PO" && (isFinance || isManager) && (
       <div className="w-full">
         <div className="w-full">
-          <div className="grid w-full grid-cols-[1.05fr_1.2fr_0.85fr_1fr_2fr_0.5fr_0.85fr_0.95fr_1.45fr] bg-muted/40 text-[13px] font-bold uppercase tracking-[0.04em] px-3 py-4 text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+          <div className="grid w-full grid-cols-[0.36fr_1.05fr_1.2fr_0.85fr_1fr_2fr_0.5fr_0.85fr_0.95fr_1.45fr] bg-muted/40 text-[13px] font-bold uppercase tracking-[0.04em] px-3 py-4 text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+            <div className="text-center">S.No</div>
             <div className="text-center">PO #</div>
             <div className="text-center">Vendor</div>
             <div className="text-center">PO Date</div>
@@ -6383,11 +6553,12 @@ if (isInventory) {
                 No purchase order approval requests yet
               </div>
             ) : (
-              notifications.map((n) => (
+              notifications.map((n, index) => (
                 <div
                   key={n.id}
-                  className="grid w-full grid-cols-[1.05fr_1.2fr_0.85fr_1fr_2fr_0.5fr_0.85fr_0.95fr_1.45fr] items-center px-3 py-5 text-[15px] leading-6 hover:bg-muted/30 transition-colors dark:hover:bg-slate-800"
+                  className="grid w-full grid-cols-[0.36fr_1.05fr_1.2fr_0.85fr_1fr_2fr_0.5fr_0.85fr_0.95fr_1.45fr] items-center px-3 py-5 text-[15px] leading-6 hover:bg-muted/30 transition-colors dark:hover:bg-slate-800"
                 >
+                  <div className="text-center font-semibold">{index + 1}</div>
                   <div className="text-center font-semibold text-[15px]">
                     <button
                       type="button"
@@ -6561,7 +6732,11 @@ if (isInventory) {
 {currentTab === "BOM" &&
   isManager && (
     <>
-      <div className="grid grid-cols-8 items-center bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 px-6 py-4 text-[13px] font-bold uppercase tracking-[0.04em] text-slate-700 dark:text-slate-300">
+      <div className="grid grid-cols-9 items-center bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 px-6 py-4 text-[13px] font-bold uppercase tracking-[0.04em] text-slate-700 dark:text-slate-300">
+        <div className="text-center">
+          S.No
+        </div>
+
         <div className="text-center">
           BOM ID
         </div>
@@ -6606,7 +6781,7 @@ if (isInventory) {
             No BOM approval requests yet
           </div>
         ) : (
-          bomData.map((notification) => {
+          bomData.map((notification, index) => {
             const status = String(
               notification.status || ""
             ).toUpperCase();
@@ -6622,8 +6797,9 @@ if (isInventory) {
             return (
               <div
                 key={notification.id}
-                className="grid grid-cols-8 items-center px-6 py-5 text-[15px] leading-6 hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
+                className="grid grid-cols-9 items-center px-6 py-5 text-[15px] leading-6 hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
               >
+                <div className="text-center font-semibold">{index + 1}</div>
 <div className="text-center text-[14px] font-semibold">
   <button
     type="button"
@@ -6809,7 +6985,8 @@ if (isInventory) {
  {currentTab === "MR" && !isFinance && (
         <div className="w-full overflow-x-auto">
           <div className="min-w-[1450px]">
-<div className="grid grid-cols-[1.05fr_1.05fr_1fr_1.15fr_1fr_0.72fr_1fr_1.55fr_1.35fr] items-center bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 px-5 py-4 text-[13px] font-bold uppercase tracking-[0.04em] text-slate-700 dark:text-slate-200">  <div className="text-center">Requester</div>
+<div className="grid grid-cols-[0.36fr_1.05fr_1.05fr_1fr_1.15fr_1fr_0.72fr_1fr_1.55fr_1.35fr] items-center bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 px-5 py-4 text-[13px] font-bold uppercase tracking-[0.04em] text-slate-700 dark:text-slate-200">  <div className="text-center">S.No</div>
+  <div className="text-center">Requester</div>
   <div className="text-center">MR ID</div>
   <div className="text-center">Created Date</div>
   <div className="text-center">Project</div>
@@ -6844,13 +7021,13 @@ if (isInventory) {
           notification.reference_id === mr.reference_id
       )
     )
-    .map((n) => {
+    .map((n, index) => {
                 const status = String(n.status || "").toUpperCase();
                 return (
 <div
   key={n.id}
   className="
-    grid grid-cols-[1.05fr_1.05fr_1fr_1.15fr_1fr_0.72fr_1fr_1.55fr_1.35fr]
+    grid grid-cols-[0.36fr_1.05fr_1.05fr_1fr_1.15fr_1fr_0.72fr_1fr_1.55fr_1.35fr]
     items-center
     px-5
     py-5
@@ -6864,6 +7041,7 @@ if (isInventory) {
     duration-200
   "
 >
+<div className="text-center font-semibold">{index + 1}</div>
 
 <div className="px-2 text-center text-[15px] font-medium leading-6 text-slate-800 dark:text-slate-100">
   {n.requester_name || "-"}
@@ -6899,14 +7077,7 @@ if (isInventory) {
   }
   className="text-[15px] font-semibold text-blue-600 hover:underline dark:text-blue-300"
 >
-  {String(n.request_type || "").toUpperCase() === "RETURNABLE"
-    ? String(n.returnable_purpose || "Returnable")
-        .replaceAll("_", " ")
-        .toLowerCase()
-        .replace(/\b\w/g, (letter) => letter.toUpperCase())
-    : String(n.request_type || "").toUpperCase() === "RETAIL_SALES"
-      ? "Retail Sales"
-      : n.request_type}
+  {getManagerMrTypeLabel(n)}
 </button>
 </div>
 
@@ -7044,7 +7215,8 @@ transition-all
       {currentTab === "CU" && isManager && (
         <div className="w-full overflow-x-auto">
           <div className="min-w-[1500px]">
-            <div className="grid grid-cols-[1.05fr_0.9fr_1.1fr_1fr_1.8fr_0.75fr_0.75fr_1.3fr_1fr_1.25fr] bg-muted/40 px-3 py-4 text-[13px] font-bold uppercase tracking-[0.04em] text-slate-700 dark:text-slate-200">
+            <div className="grid grid-cols-[0.36fr_1.05fr_0.9fr_1.1fr_1fr_1.8fr_0.75fr_0.75fr_1.3fr_1fr_1.25fr] bg-muted/40 px-3 py-4 text-[13px] font-bold uppercase tracking-[0.04em] text-slate-700 dark:text-slate-200">
+              <div className="text-center">S.No</div>
               <div>MR ID</div>
               <div>Requester</div>
               <div>Purpose / Mode</div>
@@ -7069,7 +7241,7 @@ transition-all
                 </div>
               ) : (
                 <>
-                  {returnableMrNotifications.map((mr) => {
+                  {returnableMrNotifications.map((mr, index) => {
                     const statusValue = String(
                       mr?.status || "PENDING_MANAGER",
                     )
@@ -7092,8 +7264,9 @@ transition-all
                     return (
                       <div
                         key={`returnable-mr-${mr.id}`}
-                        className="grid grid-cols-[1.05fr_0.9fr_1.1fr_1fr_1.8fr_0.75fr_0.75fr_1.3fr_1fr_1.25fr] items-center px-3 py-5 text-[15px] leading-6"
+                        className="grid grid-cols-[0.36fr_1.05fr_0.9fr_1.1fr_1fr_1.8fr_0.75fr_0.75fr_1.3fr_1fr_1.25fr] items-center px-3 py-5 text-[15px] leading-6"
                       >
+                        <div className="text-center font-semibold">{index + 1}</div>
                         <div className="font-semibold">
                           {mr.material_request_id || mr.reference_id || "-"}
                         </div>
@@ -7202,7 +7375,7 @@ transition-all
                     );
                   })}
 
-                  {returnableCuNotifications.map((notification) => {
+                  {returnableCuNotifications.map((notification, index) => {
                     const statusValue = String(notification?.status || "")
                       .trim()
                       .toUpperCase();
@@ -7253,8 +7426,9 @@ transition-all
                     return (
                       <div
                         key={`returnable-cu-${notification.id}`}
-                        className="grid grid-cols-[1.05fr_0.9fr_1.1fr_1fr_1.8fr_0.75fr_0.75fr_1.3fr_1fr_1.25fr] items-center px-3 py-5 text-[15px] leading-6"
+                        className="grid grid-cols-[0.36fr_1.05fr_0.9fr_1.1fr_1fr_1.8fr_0.75fr_0.75fr_1.3fr_1fr_1.25fr] items-center px-3 py-5 text-[15px] leading-6"
                       >
+                        <div className="text-center font-semibold">{returnableMrNotifications.length + index + 1}</div>
                         <div className="font-semibold text-blue-700 dark:text-blue-300">
                           {notification.materialRequestNumber || "-"}
                         </div>
@@ -7341,7 +7515,8 @@ transition-all
       {currentTab === "RETAIL_SALES" && isManager && (
         <div className="w-full overflow-x-auto">
           <div className="min-w-[1380px]">
-            <div className="grid grid-cols-[1.05fr_1fr_1fr_0.85fr_0.85fr_2.2fr_0.55fr_1.5fr_0.95fr_1.35fr] bg-muted/40 px-3 py-4 text-[13px] font-bold uppercase tracking-[0.04em] text-slate-700 dark:text-slate-200">
+            <div className="grid grid-cols-[0.36fr_1.05fr_1fr_1fr_0.85fr_0.85fr_2.2fr_0.55fr_1.5fr_0.95fr_1.35fr] bg-muted/40 px-3 py-4 text-[13px] font-bold uppercase tracking-[0.04em] text-slate-700 dark:text-slate-200">
+              <div className="text-center">S.No</div>
               <div className="text-center">MR ID</div>
               <div className="text-center">Requester</div>
               <div className="text-center">Project</div>
@@ -7365,7 +7540,7 @@ transition-all
                   No Retail Sales requests waiting for Manager.
                 </div>
               ) : (
-                retailSalesMrNotifications.map((mr) => {
+                retailSalesMrNotifications.map((mr, index) => {
                   const statusValue = String(
                     mr?.status || "PENDING_MANAGER",
                   )
@@ -7456,8 +7631,9 @@ transition-all
                   return (
                     <div
                       key={`retail-sales-mr-${mr.id}`}
-                      className="grid grid-cols-[1.05fr_1fr_1fr_0.85fr_0.85fr_2.2fr_0.55fr_1.5fr_0.95fr_1.35fr] items-center px-3 py-5 text-[15px] leading-6 hover:bg-muted/30"
+                      className="grid grid-cols-[0.36fr_1.05fr_1fr_1fr_0.85fr_0.85fr_2.2fr_0.55fr_1.5fr_0.95fr_1.35fr] items-center px-3 py-5 text-[15px] leading-6 hover:bg-muted/30"
                     >
+                      <div className="text-center font-semibold">{index + 1}</div>
                       <div className="text-center font-semibold">
                         <button
                           type="button"
@@ -7593,7 +7769,8 @@ transition-all
         <>
           <div className="w-full">
             <div className="w-full">
-              <div className="grid grid-cols-[0.72fr_1.15fr_0.45fr_1.15fr_0.45fr_0.58fr_0.85fr_0.68fr_1fr_0.7fr_1.55fr] bg-muted/40 text-[13px] font-bold uppercase tracking-[0.04em] px-2 py-4 text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+              <div className="grid grid-cols-[0.34fr_0.72fr_1.15fr_0.45fr_1.15fr_0.45fr_0.58fr_0.85fr_0.68fr_1fr_0.7fr_1.55fr] bg-muted/40 text-[13px] font-bold uppercase tracking-[0.04em] px-2 py-4 text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                <div className="text-center">S.No</div>
                 <div className="text-center">Requested By</div>
                 <div className="text-center">Scrap Component</div>
                 <div className="text-center">Scrap Qty</div>
@@ -7618,7 +7795,7 @@ transition-all
                     No scrap approval requests yet
                   </div>
                 ) : (
-                  scrapNotifications.map((n) => {
+                  scrapNotifications.map((n, index) => {
                     const serials = Array.isArray(
                       n.serialNumbers,
                     )
@@ -7635,8 +7812,9 @@ transition-all
                     return (
                       <div
                         key={n.id}
-                        className="grid grid-cols-[0.72fr_1.15fr_0.45fr_1.15fr_0.45fr_0.58fr_0.85fr_0.68fr_1fr_0.7fr_1.55fr] px-2 py-5 items-center text-[15px] leading-6 hover:bg-muted/50 transition-colors dark:hover:bg-slate-800"
+                        className="grid grid-cols-[0.34fr_0.72fr_1.15fr_0.45fr_1.15fr_0.45fr_0.58fr_0.85fr_0.68fr_1fr_0.7fr_1.55fr] px-2 py-5 items-center text-[15px] leading-6 hover:bg-muted/50 transition-colors dark:hover:bg-slate-800"
                       >
+                        <div className="text-center font-semibold">{index + 1}</div>
                         <div className="text-center text-[15px] font-medium">
                           {cleanScrapRequesterName(
                             n.requestedBy ||

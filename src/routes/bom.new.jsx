@@ -69,6 +69,7 @@ const componentOptions = componentsList.map((c) => ({
   value: c.id, // Always store database primary key
   label: `${c.component_id || c.component_code || c.code || c.id}`,
   component_id: c.component_id || c.component_code || c.code,
+  version: "",
   category:
     c.category ||
     c.component_category ||
@@ -141,6 +142,7 @@ const [componentSpecificationModal, setComponentSpecificationModal] = useState({
 
 const [componentForm, setComponentForm] = useState({
   component_id: "",
+  version: "",
   category: "",
   component_type: "",
   specification: "",
@@ -205,6 +207,7 @@ const openComponentModal = async () => {
 
   setComponentForm({
     component_id: nextComponentId,
+    version: "",
     category: "ACCESSORIES",
     component_type: "",
     specification: "",
@@ -267,10 +270,10 @@ const saveComponent = async () => {
   const payload = {
     request_id: `CR-${Date.now()}`,
     component_id: componentForm.component_id.trim(),
+    version: "",
     category: componentForm.category,
     component_type: String(componentForm.component_type || "").trim(),
     specifications: componentForm.specification,
-    unit_of_measurements: componentForm.unit_of_measurements,
     hsn_numbers: componentForm.hsn_no,
     sku_numbers: componentForm.sku_no,
     part_numbers: componentForm.part_no,
@@ -304,6 +307,7 @@ const saveComponent = async () => {
 
     setComponentForm({
       component_id: "",
+      version: "",
       category: "",
       component_type: "",
       specification: "",
@@ -630,7 +634,7 @@ useEffect(() => {
         onClick={() => openComponentModal()}
         className="inline-flex items-center gap-2 rounded-lg border border-border bg-white px-4 py-2 text-sm font-medium text-foreground hover:bg-muted/70 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
       >
-        <Plus className="h-4 w-4" /> Add Component
+         + New Component
       </button>
     </div>
   </div>
@@ -829,7 +833,19 @@ onChange={(e) => {
           />
         </Field>
 
-        <Field label="Category">
+        <Field label="Version">
+          <Input
+            value={componentForm.version || ""}
+            onChange={(e) =>
+              setComponentForm({
+                ...componentForm,
+                version: e.target.value,
+              })
+            }
+          />
+        </Field>
+
+        <Field label="Category" required>
           <Select
             name="category"
             value={componentForm.category}
@@ -851,7 +867,7 @@ onChange={(e) => {
           />
         </Field>
 
-        <Field label="Component Type">
+        <Field label="Component Type" required>
           <Input
             value={componentForm.component_type}
             placeholder="Example: Flight Controller"
@@ -876,7 +892,7 @@ onChange={(e) => {
           />
         </Field>
 
-        <Field label="HSN">
+        <Field label="HSN.No">
           <Input
             value={componentForm.hsn_no}
             inputMode="numeric"
@@ -893,7 +909,7 @@ onChange={(e) => {
           />
         </Field>
 
-        <Field label="SKU">
+        <Field label="SKU.No">
           <Input
             value={componentForm.sku_no}
             onChange={(e)=>
@@ -905,7 +921,7 @@ onChange={(e) => {
           />
         </Field>
 
-        <Field label="Part No">
+        <Field label="Part.No">
           <Input
             value={componentForm.part_no}
             onChange={(e)=>
@@ -928,20 +944,7 @@ onChange={(e) => {
             }
           />
         </Field>
-
-        <Field label="UOM">
-          <Input
-            value={componentForm.unit_of_measurements}
-            onChange={(e)=>
-              setComponentForm({
-                ...componentForm,
-                unit_of_measurements:e.target.value
-              })
-            }
-          />
-        </Field>
-
-        <Field label="Product Link">
+<Field label="Product Link">
           <Input
             type="url"
             value={componentForm.product_link}

@@ -695,6 +695,13 @@ const approvedPOs = approvedPurchaseOrders.length;
                       className: "overflow-hidden",
                       columns: [
 {
+  key: "sno",
+  header: "S.No",
+  className: "w-[5rem] text-center",
+  disableColumnTools: true,
+  render: (_row, index) => index + 1,
+},
+{
   key: "project_code",
   header: "Project ID",
   className: "w-[10rem] text-center",
@@ -730,6 +737,13 @@ const approvedPOs = approvedPurchaseOrders.length;
                 : _jsx(DataTable, {
                     className: "overflow-hidden",
                       columns: [
+{
+  key: "sno",
+  header: "S.No",
+  className: "w-[5rem] text-center",
+  disableColumnTools: true,
+  render: (_row, index) => index + 1,
+},
 {
   key: "po",
   header: "PO Number",

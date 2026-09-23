@@ -434,6 +434,17 @@ selectable={canManageVendor && selectionMode}
         selectionKey="id"
         columns={[
 {
+  key: "sno",
+  header: "S.No",
+  headerClassName: "text-center",
+  className: "w-[5rem] text-center",
+  disableColumnTools: true,
+  render: (_row, index) =>
+    (page - 1) * VENDORS_PAGE_SIZE +
+    index +
+    1,
+},
+{
   key: "vendor_id",
   header: "Vendor ID",
   headerClassName: "text-center",
@@ -558,6 +569,7 @@ selectable={canManageVendor && selectionMode}
               <table className="w-full text-sm border-collapse">
                 <thead>
                   <tr className="border-b border-border text-left text-xs uppercase tracking-widest text-muted-foreground">
+                    <th className="px-4 py-3 text-center">S.No</th>
                     <th className="px-4 py-3">Component</th>
                     <th className="px-4 py-3">Version</th>
                     <th className="px-4 py-3 text-right">Qty</th>
@@ -575,6 +587,7 @@ selectable={canManageVendor && selectionMode}
                       const total = qty * unitPrice * (1 + gst / 100);
                       return (
                         <tr key={index} className="border-b border-border last:border-none hover:bg-secondary/20">
+                          <td className="px-4 py-3 text-center">{index + 1}</td>
                           <td className="px-4 py-3">{product.product || "-"}</td>
                           <td className="px-4 py-3">{product.product_version || "-"}</td>
                           <td className="px-4 py-3 text-right">{qty}</td>
@@ -586,7 +599,7 @@ selectable={canManageVendor && selectionMode}
                     })
                   ) : (
                     <tr>
-                      <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
+                      <td colSpan={7} className="px-4 py-6 text-center text-muted-foreground">
                         No component details available.
                       </td>
                     </tr>

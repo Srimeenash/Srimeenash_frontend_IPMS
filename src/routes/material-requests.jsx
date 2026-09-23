@@ -1,5 +1,5 @@
 import { useCostDetails } from "@/components/app/SerialCostDetails";
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 // Material Requests page, including From Scrap source project/BOM resolution.
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { PageShell, PageHeader } from "@/components/app/PageShell";
@@ -763,6 +763,76 @@ function MaterialRequestsPage() {
   const [showBomModal, setShowBomModal] = useState(false);
   const [bomDetails, setBomDetails] = useState(null);
   const [rdDetails, setRdDetails] = useState(null);
+
+  /*
+   * Type-details popup category accordion.
+   * Same visual behaviour as the category accordion in New Material Request.
+   */
+  const [expandedDetailCategories, setExpandedDetailCategories] = useState([]);
+
+  /*
+   * Keep the last successfully-built Custom BOM audit snapshot for five
+   * minutes. This prevents edited/deleted styling from disappearing during
+   * transient API refreshes while the popup is open.
+   */
+  const [customBomAuditCache, setCustomBomAuditCache] = useState({});
+  const CUSTOM_BOM_AUDIT_CACHE_MS = 5 * 60 * 1000;
+
+  const normalizeDetailCategory = (value) =>
+    String(value || "UNCATEGORIZED").trim().toUpperCase() || "UNCATEGORIZED";
+
+  const toggleDetailCategory = (category) => {
+    const key = normalizeDetailCategory(category);
+
+    setExpandedDetailCategories((previous) =>
+      previous.includes(key)
+        ? previous.filter((value) => value !== key)
+        : [...previous, key],
+    );
+  };
+
+  const getDetailAuditSectionKey = (item = {}) => {
+    if (item?._audit_deleted === true) {
+      return "DELETED";
+    }
+
+    if (item?._audit_edited === true) {
+      return "EDITED";
+    }
+
+    /*
+     * New Custom BOM items stay together with unchanged items in the
+     * first/top section, as requested.
+     */
+    return "UNCHANGED";
+  };
+
+  const getDetailAccordionKey = (
+    sectionKey,
+    category,
+  ) =>
+    `${String(sectionKey || "UNCHANGED").trim().toUpperCase()}::${normalizeDetailCategory(
+      category,
+    )}`;
+
+  const expandAllDetailCategories = (items = []) => {
+    setExpandedDetailCategories(
+      Array.from(
+        new Set(
+          (Array.isArray(items) ? items : []).map((item) =>
+            getDetailAccordionKey(
+              getDetailAuditSectionKey(item),
+              item?.category,
+            ),
+          ),
+        ),
+      ),
+    );
+  };
+
+  const collapseAllDetailCategories = () => {
+    setExpandedDetailCategories([]);
+  };
 
   // Dedicated FROM-SCRAP MR popup.
   const [showScrapMrModal, setShowScrapMrModal] = useState(false);
@@ -5031,16 +5101,329 @@ function MaterialRequestsPage() {
       .map((item) => normalizeRequestItem(item));
   };
 
-  async function handleRequestDetailsClick(row) {
+  const getDetailItemIdentity = (item = {}) => {
+    const componentObject =
+      item?.component &&
+      typeof item.component === "object"
+        ? item.component
+        : item?.component_details || {};
+
+    const candidates = [
+      item?.component_code,
+      item?.componentCode,
+      componentObject?.component_id,
+      componentObject?.component_code,
+      item?.component_id,
+      item?.component_pk,
+      componentObject?.id,
+      typeof item?.component !== "object"
+        ? item?.component
+        : "",
+    ];
+
+    const value = candidates.find(
+      (candidate) =>
+        candidate !== undefined &&
+        candidate !== null &&
+        String(candidate).trim() !== "",
+    );
+
+    const normalizedPrimary = String(value ?? "")
+      .trim()
+      .toUpperCase();
+
+    if (normalizedPrimary) {
+      return normalizedPrimary;
+    }
+
     /*
-     * From-Scrap has its own fulfillment popup because it must show the
-     * three-way split:
-     *
-     *   GOOD / reusable Scrap
-     *   + Central In Store reservation/issue
-     *   + Procurement / PO shortage
-     *
-     * Do not open the generic BOM popup for this request type.
+     * Last-resort stable identity when serializers do not expose the same FK
+     * field in original BOM vs MR snapshot.
+     */
+    const type = String(
+      item?.component_type ||
+      componentObject?.component_type ||
+      "",
+    )
+      .trim()
+      .toUpperCase();
+
+    const specification = String(
+      item?.specification ||
+      item?.specifications ||
+      componentObject?.specification ||
+      componentObject?.specifications ||
+      "",
+    )
+      .trim()
+      .replace(/\s+/g, " ")
+      .toUpperCase();
+
+    return [type, specification]
+      .filter(Boolean)
+      .join("::");
+  };
+
+  const normalizeAuditText = (value) =>
+    String(value ?? "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .toUpperCase();
+
+  const isCustomBomRequest = (request = {}) => {
+    const type = String(
+      request?.request_type || request?.requestType || "",
+    )
+      .trim()
+      .toUpperCase();
+
+    const customized =
+      request?.customized_bom === true ||
+      request?.customized_bom === 1 ||
+      String(request?.customized_bom || "").toLowerCase() === "true" ||
+      String(request?.customized_bom || "") === "1";
+
+    return type === "BOM" && customized;
+  };
+
+  const loadOriginalBomForAudit = async (request = {}) => {
+    const bomReference =
+      request?.bom ??
+      request?.bom_id ??
+      request?.bomId ??
+      request?.bom_number ??
+      request?.bomNumber ??
+      "";
+
+    if (
+      bomReference === undefined ||
+      bomReference === null ||
+      String(bomReference).trim() === ""
+    ) {
+      return [];
+    }
+
+    const reference = encodeURIComponent(
+      String(bomReference).trim(),
+    );
+
+    /*
+     * First try the normal BOM detail endpoint. If the request stores a BOM
+     * number instead of the database PK, fall back to the filtered list API.
+     */
+    try {
+      const data = await fetchAuthenticatedJson(
+        `${config.baseURL}/bom/bom/${reference}/`,
+        { cache: "no-store" },
+      );
+
+      const items = Array.isArray(data?.items)
+        ? data.items
+        : Array.isArray(data?.bom_items)
+          ? data.bom_items
+          : [];
+
+      if (items.length) {
+        return items.map((item) => normalizeRequestItem(item));
+      }
+    } catch (error) {
+      console.warn(
+        "Direct original BOM lookup failed; trying BOM list lookup:",
+        error,
+      );
+    }
+
+    try {
+      const payload = await fetchAuthenticatedJson(
+        `${config.baseURL}/bom/bom/?page_size=5000`,
+        { cache: "no-store" },
+      );
+
+      const list = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload?.results)
+          ? payload.results
+          : [];
+
+      const normalizedReference = String(
+        bomReference,
+      )
+        .trim()
+        .toUpperCase();
+
+      const bom = list.find((candidate) =>
+        [
+          candidate?.id,
+          candidate?.pk,
+          candidate?.bom_id,
+          candidate?.bom_number,
+          candidate?.code,
+        ].some(
+          (value) =>
+            String(value ?? "")
+              .trim()
+              .toUpperCase() === normalizedReference,
+        ),
+      );
+
+      const items = Array.isArray(bom?.items)
+        ? bom.items
+        : Array.isArray(bom?.bom_items)
+          ? bom.bom_items
+          : [];
+
+      return items.map((item) =>
+        normalizeRequestItem(item),
+      );
+    } catch (error) {
+      console.warn(
+        "Unable to load original BOM for Custom BOM audit display:",
+        error,
+      );
+      return [];
+    }
+  };
+
+  const buildCustomBomAuditItems = (
+    request = {},
+    currentItems = [],
+    originalItems = [],
+  ) => {
+    if (!isCustomBomRequest(request)) {
+      return currentItems;
+    }
+
+    const droneQuantity = Math.max(
+      Number(request?.required_quantity || 1) || 1,
+      1,
+    );
+
+    const originalByIdentity = new Map();
+
+    originalItems.forEach((original, index) => {
+      const identity = getDetailItemIdentity(original);
+
+      if (identity && !originalByIdentity.has(identity)) {
+        originalByIdentity.set(identity, {
+          ...original,
+          _audit_original_index: index,
+        });
+      }
+    });
+
+    const matchedOriginalIdentities = new Set();
+
+    const auditedCurrent = currentItems.map((current, index) => {
+      const identity = getDetailItemIdentity(current);
+      const original = identity
+        ? originalByIdentity.get(identity)
+        : null;
+
+      if (!original) {
+        return {
+          ...current,
+          _audit_new: true,
+          _audit_edited: false,
+          _audit_deleted: false,
+          _audit_index: index,
+        };
+      }
+
+      matchedOriginalIdentities.add(identity);
+
+      const originalBaseQuantity = Math.max(
+        Number(
+          original?.base_quantity ??
+            original?.bom_quantity ??
+            original?.quantity ??
+            original?.qty ??
+            0,
+        ) || 0,
+        0,
+      );
+
+      const expectedQuantity =
+        originalBaseQuantity * droneQuantity;
+
+      const changed =
+        normalizeAuditText(current?.category) !==
+          normalizeAuditText(original?.category) ||
+        normalizeAuditText(current?.component_type) !==
+          normalizeAuditText(original?.component_type) ||
+        normalizeAuditText(
+          current?.specification ??
+            current?.specifications,
+        ) !==
+          normalizeAuditText(
+            original?.specification ??
+              original?.specifications,
+          ) ||
+        normalizeAuditText(
+          current?.unit ?? current?.uom,
+        ) !==
+          normalizeAuditText(
+            original?.unit ?? original?.uom,
+          ) ||
+        Number(current?.quantity || 0) !==
+          Number(expectedQuantity || 0);
+
+      return {
+        ...current,
+        _audit_new: false,
+        _audit_edited: changed,
+        _audit_deleted: false,
+        _audit_index: index,
+      };
+    });
+
+    /*
+     * Deleted Customized-BOM rows are not present in the submitted MR item
+     * payload. Reconstruct them from the original BOM so the Type popup can
+     * still show the deleted row in red.
+     */
+    const deletedOriginals = originalItems
+      .filter((original) => {
+        const identity =
+          getDetailItemIdentity(original);
+
+        return (
+          identity &&
+          !matchedOriginalIdentities.has(identity)
+        );
+      })
+      .map((original, index) => ({
+        ...original,
+        quantity:
+          Math.max(
+            Number(
+              original?.base_quantity ??
+                original?.bom_quantity ??
+                original?.quantity ??
+                original?.qty ??
+                0,
+            ) || 0,
+            0,
+          ) * droneQuantity,
+        _audit_new: false,
+        _audit_edited: false,
+        _audit_deleted: true,
+        _audit_index:
+          auditedCurrent.length + index,
+        remarks:
+          original?.remarks ||
+          "Deleted from Custom BOM",
+      }));
+
+    return [
+      ...auditedCurrent,
+      ...deletedOriginals,
+    ];
+  };
+
+  async function handleRequestDetailsClick(row, options = {}) {
+    const preserveExpansion = options?.preserveExpansion === true;
+    /*
+     * From-Scrap keeps its dedicated fulfillment popup.
      */
     if (isFromScrapRequest(row)) {
       await handleFromScrapClick(row);
@@ -5062,47 +5445,165 @@ function MaterialRequestsPage() {
 
       await loadProjectInventoryForRequest(requestData);
 
-      const droneInstances = await loadPhysicalDroneInstances(requestData);
+      const droneInstances =
+        await loadPhysicalDroneInstances(
+          requestData,
+        );
 
-      const normalizedItems = getRequestDetailItems(requestData);
+      const rawCurrentItems =
+        getRequestDetailItems(
+          requestData,
+        );
+
+      let normalizedItems =
+        rawCurrentItems;
+
+      /*
+       * Custom BOM audit display:
+       * compare the submitted MR snapshot with the original BOM.
+       * - edited original rows -> yellow
+       * - deleted original rows -> reconstructed and shown red
+       * - newly-added rows      -> blue
+       */
+      const auditRequest = {
+        ...row,
+        ...requestData,
+
+        /*
+         * Preserve Custom BOM identity / BOM reference from the list row
+         * when the detail serializer omits those fields at later workflow
+         * stages (PO_RAISED, DELIVERED, etc.).
+         */
+        customized_bom:
+          requestData?.customized_bom ??
+          row?.customized_bom ??
+          row?.customizedBom ??
+          false,
+
+        bom:
+          requestData?.bom ??
+          requestData?.bom_id ??
+          row?.bom ??
+          row?.bom_id ??
+          row?.bomId ??
+          "",
+
+        bom_number:
+          requestData?.bom_number ??
+          row?.bom_number ??
+          row?.bomNumber ??
+          "",
+      };
+
+      const customBomAuditEnabled =
+        isCustomBomRequest(auditRequest) ||
+        isCustomBomRequest(row);
+
+      if (customBomAuditEnabled) {
+        const requestCacheKey = String(
+          auditRequest?.id ||
+            auditRequest?.material_request_id ||
+            auditRequest?.request_id ||
+            "",
+        ).trim();
+
+        const originalItems =
+          await loadOriginalBomForAudit(
+            auditRequest,
+          );
+
+        const rebuiltAuditItems =
+          originalItems.length
+            ? buildCustomBomAuditItems(
+                auditRequest,
+                rawCurrentItems,
+                originalItems,
+              )
+            : [];
+
+        if (rebuiltAuditItems.length) {
+          normalizedItems =
+            rebuiltAuditItems;
+
+          if (requestCacheKey) {
+            setCustomBomAuditCache(
+              (previous) => ({
+                ...previous,
+                [requestCacheKey]: {
+                  createdAt: Date.now(),
+                  items:
+                    rebuiltAuditItems,
+                },
+              }),
+            );
+          }
+        } else {
+          const cachedAudit =
+            requestCacheKey
+              ? customBomAuditCache[
+                  requestCacheKey
+                ]
+              : null;
+
+          const cacheIsFresh =
+            cachedAudit?.createdAt &&
+            Date.now() -
+              Number(
+                cachedAudit.createdAt,
+              ) <=
+              CUSTOM_BOM_AUDIT_CACHE_MS;
+
+          normalizedItems =
+            cacheIsFresh &&
+            Array.isArray(
+              cachedAudit?.items,
+            )
+              ? cachedAudit.items
+              : rawCurrentItems;
+        }
+      }
+
       const derivedType = String(
-        requestData?.request_type || row?.request_type || "",
+        requestData?.request_type ||
+          row?.request_type ||
+          "",
       )
         .trim()
         .toUpperCase();
 
       const isCustomBom =
-        derivedType === "BOM" &&
-        (
-          requestData?.customized_bom === true ||
-          requestData?.customized_bom === "true" ||
-          requestData?.customized_bom === 1 ||
-          requestData?.customized_bom === "1" ||
-          row?.customized_bom === true ||
-          row?.customized_bom === "true" ||
-          row?.customized_bom === 1 ||
-          row?.customized_bom === "1"
-        );
+        customBomAuditEnabled ||
+        isCustomBomRequest(requestData) ||
+        isCustomBomRequest(row);
 
       const typeTitle =
-        derivedType === "R&D" || derivedType === "RD"
+        derivedType === "R&D" ||
+        derivedType === "RD"
           ? "R & D Details"
           : isCustomBom
             ? "Custom BOM Details"
-          : derivedType === "RETURNABLE"
-            ? `${String(
-                requestData?.returnable_purpose ||
-                  row?.returnable_purpose ||
-                  "Returnable",
-              )
-                .replaceAll("_", " ")
-                .toLowerCase()
-                .replace(/\b\w/g, (character) => character.toUpperCase())} Details`
-            : derivedType === "RETAIL_SALES"
-              ? "Retail Sales Details"
-              : derivedType === "BOM"
-                ? "BOM Details"
-                : `${requestData?.request_type || row?.request_type || "Request"} Details`;
+            : derivedType === "RETURNABLE"
+              ? `${String(
+                  requestData?.returnable_purpose ||
+                    row?.returnable_purpose ||
+                    "Returnable",
+                )
+                  .replaceAll("_", " ")
+                  .toLowerCase()
+                  .replace(
+                    /\b\w/g,
+                    (character) =>
+                      character.toUpperCase(),
+                  )} Details`
+              : derivedType === "RETAIL_SALES"
+                ? "Retail Sales Details"
+                : derivedType === "BOM"
+                  ? "BOM Details"
+                  : `${
+                      requestData?.request_type ||
+                      row?.request_type ||
+                      "Request"
+                    } Details`;
 
       setBomDetails({
         bom_name:
@@ -5111,14 +5612,47 @@ function MaterialRequestsPage() {
           requestData?.name ||
           typeTitle,
         items: normalizedItems,
-        request: requestData,
+        request: {
+          ...row,
+          ...requestData,
+          customized_bom:
+            auditRequest?.customized_bom ??
+            requestData?.customized_bom ??
+            row?.customized_bom ??
+            false,
+          bom:
+            auditRequest?.bom ??
+            requestData?.bom ??
+            row?.bom ??
+            "",
+          bom_number:
+            auditRequest?.bom_number ??
+            requestData?.bom_number ??
+            row?.bom_number ??
+            "",
+        },
         title: typeTitle,
         drone_instances: droneInstances,
+        is_custom_bom: isCustomBom,
       });
+
       setRdDetails(null);
+
+      /*
+       * Normal open starts collapsed. Automatic live refresh keeps the
+       * user's current expanded/collapsed categories and rebuilds Custom BOM
+       * audit rows instead of replacing them with the plain BOM popup data.
+       */
+      if (!preserveExpansion) {
+        setExpandedDetailCategories([]);
+      }
+
       setShowBomModal(true);
     } catch (err) {
-      console.error("Failed to load MR details", err);
+      console.error(
+        "Failed to load MR details",
+        err,
+      );
     }
   }
 
@@ -5146,6 +5680,7 @@ function MaterialRequestsPage() {
         ...data,
         rd_items: normalizedItems,
       });
+      setExpandedDetailCategories([]);
       setShowBomModal(true);
     } catch (err) {
       console.error("Failed to load R&D details", err);
@@ -5908,15 +6443,25 @@ const displayReadyRequests =
     }
 
     const refreshOpenRequest = () => {
-      const bomRequest = bomDetails?.request;
+      const openRequest =
+        bomDetails?.request ||
+        rdDetails ||
+        null;
 
-      if (bomRequest?.id) {
-        handleBomClick(bomRequest);
-        return;
-      }
-
-      if (rdDetails?.id) {
-        handleRdClick(rdDetails.id);
+      if (openRequest?.id) {
+        /*
+         * IMPORTANT:
+         * Refresh through the same audit-aware Type popup loader.
+         * The previous code called handleBomClick()/handleRdClick(), which
+         * replaced the audited Custom BOM rows every 5 seconds and caused
+         * yellow edited rows / red deleted rows to disappear.
+         */
+        void handleRequestDetailsClick(
+          openRequest,
+          {
+            preserveExpansion: true,
+          },
+        );
       }
     };
 
@@ -6111,6 +6656,946 @@ const canRequestApproval = (request) => {
     }
   }, [materialRequestsPage, materialRequestsPageCount]);
 
+  const getDetailPrintRows = () => {
+    const sourceItems =
+      bomDetails?.items ||
+      rdDetails?.rd_items ||
+      [];
+
+    const auditRank = (item = {}) => {
+      if (item?._audit_deleted === true) return 3;
+      if (item?._audit_edited === true) return 2;
+
+      /*
+       * New rows are not "edited original rows". Keep them with the
+       * unedited/no-colour group, while still labelling them NEW.
+       */
+      return 1;
+    };
+
+    return [...sourceItems].sort((left, right) => {
+      /*
+       * Print / Excel order:
+       *   1. unchanged / new
+       *   2. edited
+       *   3. deleted
+       *
+       * Status must be compared BEFORE category. This guarantees every
+       * deleted component appears at the end of the report.
+       */
+      const rankCompare =
+        auditRank(left) -
+        auditRank(right);
+
+      if (rankCompare !== 0) {
+        return rankCompare;
+      }
+
+      const categoryCompare =
+        normalizeDetailCategory(left?.category)
+          .localeCompare(
+            normalizeDetailCategory(
+              right?.category,
+            ),
+          );
+
+      if (categoryCompare !== 0) {
+        return categoryCompare;
+      }
+
+      return String(
+        left?.component_code ||
+          left?.component_id ||
+          "",
+      ).localeCompare(
+        String(
+          right?.component_code ||
+            right?.component_id ||
+            "",
+        ),
+      );
+    });
+  };
+
+  const getDetailAuditLabel = (item = {}) => {
+    if (item?._audit_deleted === true) {
+      return "DELETED";
+    }
+
+    if (item?._audit_edited === true) {
+      return "EDITED";
+    }
+
+    if (item?._audit_new === true) {
+      return "NEW";
+    }
+
+    return "UNCHANGED";
+  };
+
+  const escapePrintHtml = (value) =>
+    String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+
+  const buildMrDetailsPrintableHtml = () => {
+    const detailRows =
+      getDetailPrintRows();
+
+    const detailRequest =
+      bomDetails?.request ||
+      rdDetails ||
+      {};
+
+    const title =
+      bomDetails?.title ||
+      (
+        bomDetails
+          ? "BOM Details"
+          : "R & D Details"
+      );
+
+    const mrId =
+      detailRequest?.material_request_id ||
+      detailRequest?.request_id ||
+      "-";
+
+    const project =
+      getProjectDisplayValue(
+        detailRequest?.project_name ||
+          detailRequest?.project,
+      ) || "-";
+
+    /*
+     * FINAL PRINT / EXCEL ORDER
+     * -------------------------
+     * Do NOT build category sections before status ordering.
+     *
+     * One flat table is generated in this exact order:
+     *   1. Unchanged / New  -> white
+     *   2. Edited           -> yellow
+     *   3. Deleted          -> red
+     *
+     * Category is a normal first data column, so a deleted ELECTRICALS row
+     * can never jump above an edited PAYLOAD row just because E comes before P.
+     */
+    const printableRows =
+      detailRows
+        .map((item, index) => ({
+          item,
+          sourceIndex: index,
+        }))
+        .sort((leftEntry, rightEntry) => {
+          const getRank = (item) => {
+            if (item?._audit_deleted === true) return 3;
+            if (item?._audit_edited === true) return 2;
+            return 1;
+          };
+
+          const rankCompare =
+            getRank(leftEntry.item) -
+            getRank(rightEntry.item);
+
+          if (rankCompare !== 0) {
+            return rankCompare;
+          }
+
+          const categoryCompare =
+            normalizeDetailCategory(
+              leftEntry.item?.category,
+            ).localeCompare(
+              normalizeDetailCategory(
+                rightEntry.item?.category,
+              ),
+            );
+
+          if (categoryCompare !== 0) {
+            return categoryCompare;
+          }
+
+          return String(
+            leftEntry.item?.component_code ||
+              leftEntry.item?.component_id ||
+              "",
+          ).localeCompare(
+            String(
+              rightEntry.item?.component_code ||
+                rightEntry.item?.component_id ||
+                "",
+            ),
+          );
+        });
+
+    const categorySections =
+      printableRows
+        .map(({ item }, index) => {
+          const auditLabel =
+            getDetailAuditLabel(item);
+
+          const rowClass =
+            auditLabel === "DELETED"
+              ? "deleted-row"
+              : auditLabel === "EDITED"
+                ? "edited-row"
+                : "normal-row";
+
+          const inlineRowStyle =
+            auditLabel === "DELETED"
+              ? "background:#fecaca !important;background-color:#fecaca !important;color:#991b1b !important;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;"
+              : auditLabel === "EDITED"
+                ? "background:#fde68a !important;background-color:#fde68a !important;color:#111827 !important;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;"
+                : "background:#ffffff !important;background-color:#ffffff !important;color:#111827 !important;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;";
+
+          const category =
+            normalizeDetailCategory(
+              item?.category,
+            );
+
+          const componentId =
+            item?.component_code ||
+            item?.component_id ||
+            "-";
+
+          const componentType =
+            item?.component_type ||
+            item?.component?.component_type ||
+            "-";
+
+          const specification =
+            item?.specification ||
+            item?.specifications ||
+            item?.component?.specifications ||
+            item?.component?.specification ||
+            "-";
+
+          const hsn =
+            item?.hsn_no ||
+            item?.hsn_numbers ||
+            item?.component?.hsn_no ||
+            "-";
+
+          const quantity =
+            Number(
+              item?.quantity ||
+                item?.qty ||
+                0,
+            );
+
+          const uom =
+            item?.unit ||
+            item?.uom ||
+            "-";
+
+          const remarks =
+            item?.remarks ||
+            (
+              auditLabel === "DELETED"
+                ? "Deleted from Custom BOM"
+                : "-"
+            );
+
+          return `
+            <tr class="${rowClass}" style="${inlineRowStyle}">
+              <td style="${inlineRowStyle}">${index + 1}</td>
+              <td style="${inlineRowStyle}">${escapePrintHtml(category)}</td>
+              <td style="${inlineRowStyle}">${escapePrintHtml(componentId)}</td>
+              <td style="${inlineRowStyle}">${escapePrintHtml(componentType)}</td>
+              <td style="${inlineRowStyle}">${escapePrintHtml(specification)}</td>
+              <td style="${inlineRowStyle}">${escapePrintHtml(hsn)}</td>
+              <td style="${inlineRowStyle}">${escapePrintHtml(quantity)}</td>
+              <td style="${inlineRowStyle}">${escapePrintHtml(uom)}</td>
+              <td style="${inlineRowStyle}"><strong>${escapePrintHtml(auditLabel)}</strong></td>
+              <td style="${inlineRowStyle}">${escapePrintHtml(remarks || "-")}</td>
+            </tr>
+          `;
+        })
+        .join("");
+
+
+    return `
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>${escapePrintHtml(title)} - ${escapePrintHtml(mrId)}</title>
+          <style>
+            @page {
+              size: landscape;
+              margin: 10mm;
+            }
+
+            * {
+              box-sizing: border-box;
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+
+            body {
+              margin: 0;
+              padding: 18px;
+              color: #111827;
+              background: #ffffff;
+              font-family: Arial, Helvetica, sans-serif;
+            }
+
+            h1 {
+              margin: 0 0 6px;
+              font-size: 20px;
+            }
+
+            .meta {
+              display: grid;
+              grid-template-columns: repeat(4, minmax(0, 1fr));
+              gap: 8px;
+              margin: 14px 0 18px;
+            }
+
+            .meta-box {
+              border: 1px solid #cbd5e1;
+              padding: 8px 10px;
+              border-radius: 6px;
+            }
+
+            .meta-label {
+              color: #64748b;
+              font-size: 10px;
+              font-weight: 700;
+              text-transform: uppercase;
+            }
+
+            .meta-value {
+              margin-top: 3px;
+              font-size: 12px;
+              font-weight: 700;
+            }
+
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              table-layout: auto;
+              font-size: 10px;
+            }
+
+            th,
+            td {
+              border: 1px solid #94a3b8;
+              padding: 6px 7px;
+              vertical-align: middle;
+              word-break: break-word;
+            }
+
+            th {
+              background: #e2e8f0;
+              text-align: center;
+              font-weight: 700;
+            }
+
+            .category-row td {
+              background-color: #dbeafe !important;
+              color: #1e3a8a !important;
+              font-size: 11px;
+              font-weight: 800;
+              text-align: left;
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+
+            .status-heading td {
+              font-size: 11px;
+              font-weight: 800;
+              text-align: left;
+              border-top: 2px solid #64748b;
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+
+            .normal-heading td {
+              background-color: #ffffff !important;
+              color: #111827 !important;
+            }
+
+            .edited-heading td {
+              background-color: #fef3c7 !important;
+              color: #92400e !important;
+            }
+
+            .deleted-heading td {
+              background-color: #fee2e2 !important;
+              color: #991b1b !important;
+            }
+
+            .category-count {
+              margin-left: 8px;
+              font-size: 9px;
+              font-weight: 600;
+            }
+
+            /* User-required print order / colours */
+            .normal-row,
+            .normal-row td {
+              background-color: #ffffff !important;
+              color: #111827 !important;
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+
+            .edited-row,
+            .edited-row td {
+              background: #fde68a !important;
+              background-color: #fde68a !important;
+              color: #111827 !important;
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+
+            .deleted-row,
+            .deleted-row td {
+              background: #fecaca !important;
+              background-color: #fecaca !important;
+              color: #991b1b !important;
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+
+            .legend {
+              display: flex;
+              gap: 14px;
+              margin: 0 0 12px;
+              font-size: 10px;
+            }
+
+            .legend span {
+              border: 1px solid #cbd5e1;
+              border-radius: 4px;
+              padding: 4px 7px;
+            }
+
+            .legend .edited {
+              background-color: #fef3c7 !important;
+              color: #92400e !important;
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+
+            .legend .deleted {
+              background-color: #fee2e2 !important;
+              color: #991b1b !important;
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+
+            @media print {
+              body {
+                padding: 0;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+              }
+
+              .no-print {
+                display: none !important;
+              }
+
+              tr,
+              td,
+              th {
+                page-break-inside: avoid;
+              }
+            }
+          </style>
+        </head>
+
+        <body>
+          <h1>${escapePrintHtml(title)}</h1>
+
+          <div class="meta">
+            <div class="meta-box">
+              <div class="meta-label">MR ID</div>
+              <div class="meta-value">${escapePrintHtml(mrId)}</div>
+            </div>
+
+            <div class="meta-box">
+              <div class="meta-label">Requester</div>
+              <div class="meta-value">${escapePrintHtml(
+                detailRequest?.requester_name ||
+                  detailRequest?.requester ||
+                  detailRequest?.created_by ||
+                  "-"
+              )}</div>
+            </div>
+
+            <div class="meta-box">
+              <div class="meta-label">Request Type</div>
+              <div class="meta-value">${escapePrintHtml(
+                detailRequest?.request_type ||
+                  "-"
+              )}</div>
+            </div>
+
+            <div class="meta-box">
+              <div class="meta-label">Project</div>
+              <div class="meta-value">${escapePrintHtml(project)}</div>
+            </div>
+
+            <div class="meta-box">
+              <div class="meta-label">Created Date</div>
+              <div class="meta-value">${escapePrintHtml(
+                detailRequest?.date ||
+                  detailRequest?.created_at ||
+                  detailRequest?.created_date ||
+                  "-"
+              )}</div>
+            </div>
+
+            <div class="meta-box">
+              <div class="meta-label">Required Date</div>
+              <div class="meta-value">${escapePrintHtml(
+                detailRequest?.required_date ||
+                  detailRequest?.requiredDate ||
+                  "-"
+              )}</div>
+            </div>
+
+            <div class="meta-box">
+              <div class="meta-label">Status</div>
+              <div class="meta-value">${escapePrintHtml(
+                detailRequest?.visible_status ||
+                  detailRequest?.status ||
+                  detailRequest?.approval_status ||
+                  "-"
+              )}</div>
+            </div>
+
+            <div class="meta-box">
+              <div class="meta-label">Remarks</div>
+              <div class="meta-value">${escapePrintHtml(
+                detailRequest?.remarks ||
+                  "-"
+              )}</div>
+            </div>
+          </div>
+
+          <div class="legend">
+            <span>Unchanged / New</span>
+            <span class="edited">Edited</span>
+            <span class="deleted">Deleted</span>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th>S.No</th>
+                <th>Category</th>
+                <th>Component ID</th>
+                <th>Component Type</th>
+                <th>Specification</th>
+                <th>HSN No</th>
+                <th>Requested Qty</th>
+                <th>UOM</th>
+                <th>Change Status</th>
+                <th>Remarks</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${categorySections}
+            </tbody>
+          </table>
+        </body>
+      </html>
+    `;
+  };
+
+  const printMrDetails = () => {
+    const printableHtml =
+      buildMrDetailsPrintableHtml();
+
+    const printWindow =
+      window.open(
+        "",
+        "_blank",
+        "width=1600,height=1000",
+      );
+
+    if (!printWindow) {
+      alert(
+        "Please allow popups to print MR details.",
+      );
+      return;
+    }
+
+    printWindow.document.open();
+    printWindow.document.write(
+      printableHtml,
+    );
+    printWindow.document.close();
+
+    printWindow.focus();
+
+    window.setTimeout(() => {
+      printWindow.print();
+    }, 250);
+  };
+
+  const escapeExcelXml = (value) =>
+    String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&apos;");
+
+  const exportMrDetailsToExcel = () => {
+    const detailRequest =
+      bomDetails?.request ||
+      rdDetails ||
+      {};
+
+    const rows =
+      getDetailPrintRows();
+
+    const mrId = String(
+      detailRequest?.material_request_id ||
+        detailRequest?.request_id ||
+        "material-request",
+    ).trim();
+
+    const requester =
+      detailRequest?.requester_name ||
+      detailRequest?.requester ||
+      detailRequest?.created_by ||
+      "-";
+
+    const requestType =
+      bomDetails?.is_custom_bom
+        ? "Custom BOM"
+        : detailRequest?.request_type ||
+          "-";
+
+    const project =
+      getProjectDisplayValue(
+        detailRequest?.project_name ||
+          detailRequest?.project,
+      ) || "-";
+
+    const createdDate =
+      detailRequest?.date ||
+      detailRequest?.created_at ||
+      detailRequest?.created_date ||
+      "-";
+
+    const requiredDate =
+      detailRequest?.required_date ||
+      detailRequest?.requiredDate ||
+      "-";
+
+    const status =
+      detailRequest?.visible_status ||
+      detailRequest?.status ||
+      detailRequest?.approval_status ||
+      "-";
+
+    const remarks =
+      detailRequest?.remarks ||
+      "-";
+
+    const excelRows =
+      rows
+        .map((item, index) => {
+          const auditLabel =
+            getDetailAuditLabel(item);
+
+          const styleId =
+            auditLabel === "DELETED"
+              ? "DeletedRow"
+              : auditLabel === "EDITED"
+                ? "EditedRow"
+                : "NormalRow";
+
+          const category =
+            normalizeDetailCategory(
+              item?.category,
+            );
+
+          const componentId =
+            item?.component_code ||
+            item?.component_id ||
+            "-";
+
+          const componentType =
+            item?.component_type ||
+            item?.component?.component_type ||
+            "-";
+
+          const specification =
+            item?.specification ||
+            item?.specifications ||
+            item?.component?.specifications ||
+            item?.component?.specification ||
+            "-";
+
+          const hsn =
+            item?.hsn_no ||
+            item?.hsn_numbers ||
+            item?.component?.hsn_no ||
+            "-";
+
+          const quantity =
+            Number(
+              item?.quantity ||
+                item?.qty ||
+                0,
+            );
+
+          const uom =
+            item?.unit ||
+            item?.uom ||
+            "-";
+
+          const rowRemarks =
+            item?.remarks ||
+            (
+              auditLabel === "DELETED"
+                ? "Deleted from Custom BOM"
+                : "-"
+            );
+
+          const textCell = (value) =>
+            `<Cell ss:StyleID="${styleId}"><Data ss:Type="String">${escapeExcelXml(value)}</Data></Cell>`;
+
+          const numberCell = (value) =>
+            `<Cell ss:StyleID="${styleId}"><Data ss:Type="Number">${Number(value || 0)}</Data></Cell>`;
+
+          return `
+            <Row>
+              ${numberCell(index + 1)}
+              ${textCell(category)}
+              ${textCell(componentId)}
+              ${textCell(componentType)}
+              ${textCell(specification)}
+              ${textCell(hsn)}
+              ${numberCell(quantity)}
+              ${textCell(uom)}
+              ${textCell(auditLabel)}
+              ${textCell(rowRemarks)}
+            </Row>
+          `;
+        })
+        .join("");
+
+    const workbookXml = `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook
+  xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+  xmlns:o="urn:schemas-microsoft-com:office:office"
+  xmlns:x="urn:schemas-microsoft-com:office:excel"
+  xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+  xmlns:html="http://www.w3.org/TR/REC-html40">
+
+  <Styles>
+    <Style ss:ID="Default" ss:Name="Normal">
+      <Alignment ss:Vertical="Center"/>
+      <Font ss:FontName="Calibri" ss:Size="11"/>
+    </Style>
+
+    <Style ss:ID="Title">
+      <Font ss:Bold="1" ss:Size="16"/>
+      <Alignment ss:Vertical="Center"/>
+    </Style>
+
+    <Style ss:ID="MetaLabel">
+      <Font ss:Bold="1" ss:Color="#64748B"/>
+      <Interior ss:Color="#F8FAFC" ss:Pattern="Solid"/>
+      <Borders>
+        <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
+        <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
+        <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
+        <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
+      </Borders>
+    </Style>
+
+    <Style ss:ID="MetaValue">
+      <Font ss:Bold="1"/>
+      <Borders>
+        <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
+        <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
+        <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
+        <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
+      </Borders>
+    </Style>
+
+    <Style ss:ID="Header">
+      <Font ss:Bold="1"/>
+      <Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/>
+      <Interior ss:Color="#E2E8F0" ss:Pattern="Solid"/>
+      <Borders>
+        <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#94A3B8"/>
+        <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#94A3B8"/>
+        <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#94A3B8"/>
+        <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#94A3B8"/>
+      </Borders>
+    </Style>
+
+    <Style ss:ID="NormalRow">
+      <Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/>
+      <Alignment ss:Vertical="Center" ss:WrapText="1"/>
+      <Borders>
+        <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
+        <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
+        <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
+        <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
+      </Borders>
+    </Style>
+
+    <Style ss:ID="EditedRow">
+      <Interior ss:Color="#FDE68A" ss:Pattern="Solid"/>
+      <Alignment ss:Vertical="Center" ss:WrapText="1"/>
+      <Borders>
+        <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D97706"/>
+        <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D97706"/>
+        <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D97706"/>
+        <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D97706"/>
+      </Borders>
+    </Style>
+
+    <Style ss:ID="DeletedRow">
+      <Font ss:Color="#991B1B"/>
+      <Interior ss:Color="#FECACA" ss:Pattern="Solid"/>
+      <Alignment ss:Vertical="Center" ss:WrapText="1"/>
+      <Borders>
+        <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#DC2626"/>
+        <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#DC2626"/>
+        <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#DC2626"/>
+        <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#DC2626"/>
+      </Borders>
+    </Style>
+
+    <Style ss:ID="LegendEdited">
+      <Interior ss:Color="#FDE68A" ss:Pattern="Solid"/>
+      <Font ss:Bold="1"/>
+    </Style>
+
+    <Style ss:ID="LegendDeleted">
+      <Interior ss:Color="#FECACA" ss:Pattern="Solid"/>
+      <Font ss:Bold="1" ss:Color="#991B1B"/>
+    </Style>
+  </Styles>
+
+  <Worksheet ss:Name="MR Components">
+    <Table>
+      <Column ss:Width="48"/>
+      <Column ss:Width="110"/>
+      <Column ss:Width="100"/>
+      <Column ss:Width="135"/>
+      <Column ss:Width="240"/>
+      <Column ss:Width="80"/>
+      <Column ss:Width="85"/>
+      <Column ss:Width="65"/>
+      <Column ss:Width="95"/>
+      <Column ss:Width="180"/>
+
+      <Row ss:Height="26">
+        <Cell ss:StyleID="Title" ss:MergeAcross="9">
+          <Data ss:Type="String">${escapeExcelXml(
+            bomDetails?.title || "Material Request Details"
+          )}</Data>
+        </Cell>
+      </Row>
+
+      <Row/>
+      <Row>
+        <Cell ss:StyleID="MetaLabel"><Data ss:Type="String">MR ID</Data></Cell>
+        <Cell ss:StyleID="MetaValue"><Data ss:Type="String">${escapeExcelXml(mrId)}</Data></Cell>
+        <Cell ss:StyleID="MetaLabel"><Data ss:Type="String">Requester</Data></Cell>
+        <Cell ss:StyleID="MetaValue"><Data ss:Type="String">${escapeExcelXml(requester)}</Data></Cell>
+        <Cell ss:StyleID="MetaLabel"><Data ss:Type="String">Request Type</Data></Cell>
+        <Cell ss:StyleID="MetaValue"><Data ss:Type="String">${escapeExcelXml(requestType)}</Data></Cell>
+        <Cell ss:StyleID="MetaLabel"><Data ss:Type="String">Project</Data></Cell>
+        <Cell ss:StyleID="MetaValue" ss:MergeAcross="2"><Data ss:Type="String">${escapeExcelXml(project)}</Data></Cell>
+      </Row>
+
+      <Row>
+        <Cell ss:StyleID="MetaLabel"><Data ss:Type="String">Created Date</Data></Cell>
+        <Cell ss:StyleID="MetaValue"><Data ss:Type="String">${escapeExcelXml(createdDate)}</Data></Cell>
+        <Cell ss:StyleID="MetaLabel"><Data ss:Type="String">Required Date</Data></Cell>
+        <Cell ss:StyleID="MetaValue"><Data ss:Type="String">${escapeExcelXml(requiredDate)}</Data></Cell>
+        <Cell ss:StyleID="MetaLabel"><Data ss:Type="String">Status</Data></Cell>
+        <Cell ss:StyleID="MetaValue"><Data ss:Type="String">${escapeExcelXml(status)}</Data></Cell>
+        <Cell ss:StyleID="MetaLabel"><Data ss:Type="String">Remarks</Data></Cell>
+        <Cell ss:StyleID="MetaValue" ss:MergeAcross="2"><Data ss:Type="String">${escapeExcelXml(remarks)}</Data></Cell>
+      </Row>
+
+      <Row/>
+      <Row>
+        <Cell ss:StyleID="NormalRow" ss:MergeAcross="1"><Data ss:Type="String">Unchanged / New</Data></Cell>
+        <Cell ss:StyleID="LegendEdited" ss:MergeAcross="1"><Data ss:Type="String">Edited</Data></Cell>
+        <Cell ss:StyleID="LegendDeleted" ss:MergeAcross="1"><Data ss:Type="String">Deleted</Data></Cell>
+      </Row>
+
+      <Row/>
+      <Row>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">S.No</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Category</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Component ID</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Component Type</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Specification</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">HSN No</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Requested Qty</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">UOM</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Change Status</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Remarks</Data></Cell>
+      </Row>
+
+      ${excelRows}
+    </Table>
+
+    <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">
+      <FreezePanes/>
+      <FrozenNoSplit/>
+      <SplitHorizontal>6</SplitHorizontal>
+      <TopRowBottomPane>6</TopRowBottomPane>
+      <ProtectObjects>False</ProtectObjects>
+      <ProtectScenarios>False</ProtectScenarios>
+    </WorksheetOptions>
+  </Worksheet>
+</Workbook>`;
+
+    const blob =
+      new Blob(
+        [workbookXml],
+        {
+          type:
+            "application/vnd.ms-excel;charset=utf-8;",
+        },
+      );
+
+    const url =
+      URL.createObjectURL(blob);
+
+    const anchor =
+      document.createElement("a");
+
+    const safeMrId =
+      mrId.replace(
+        /[^a-z0-9_-]+/gi,
+        "_",
+      );
+
+    anchor.href = url;
+    anchor.download =
+      `${safeMrId}_component_details.xls`;
+
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+
+    window.setTimeout(() => {
+      URL.revokeObjectURL(url);
+    }, 0);
+  };
+
+
   if (costDetailsPage && canSeeCosting) return costDetailsPage;
   return (
     <PageShell>
@@ -6258,6 +7743,17 @@ const canRequestApproval = (request) => {
           enableColumnTools
 columns={[...([
           {
+            key: "sno",
+            header: "S.No",
+            className: "w-[5rem] text-center",
+            disableColumnTools: true,
+            render: (_row, index) =>
+              (materialRequestsPage - 1) *
+                MATERIAL_REQUESTS_PAGE_SIZE +
+              index +
+              1,
+          },
+          {
             key: "requester_name",
             header: "Requester",
             render: (r) => (
@@ -6398,16 +7894,13 @@ columns={[...([
                         ? "Retail Sales"
                         : r.request_type;
 
+              /*
+               * Every MR type now opens a categorized details popup.
+               * From Scrap keeps its specialized popup; all other types use
+               * the generic Type-details popup.
+               */
               const canOpenTypeDetails =
-                fromScrap ||
-                (
-                  !returnableQcReorder &&
-                  (
-                    normalizedType === "BOM" ||
-                    normalizedType === "R&D" ||
-                    normalizedType === "RD"
-                  )
-                );
+                Boolean(r?.id);
 
               return (
                 <div className="flex flex-col items-center gap-1">
@@ -6828,17 +8321,43 @@ columns={[...([
         </div>
       )}
       {showScrapMrModal && (
-        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 px-4 dark:bg-black/70">
-          <div className="flex max-h-[85vh] w-[1050px] max-w-[96vw] flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-950">
-            <div className="border-b border-gray-100 px-6 py-4 dark:border-slate-700">
-              <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                From Scrap Details
-              </h2>
+        <div
+          className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 px-4 dark:bg-black/70"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setShowScrapMrModal(false);
+              setScrapMrDetails(null);
+            }
+          }}
+        >
+          <div
+            className="flex max-h-[85vh] w-[1050px] max-w-[96vw] flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-950"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-4 dark:border-slate-700">
+              <div>
+                <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                  From Scrap Details
+                </h2>
 
-              <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">
-                Shows the complete From-Scrap fulfillment: GOOD / reusable Scrap components are reused first;
-                only the remaining quantity is reserved from In Store, and any balance is routed to Procurement / PO.
-              </p>
+                <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">
+                  Shows the complete From-Scrap fulfillment: GOOD / reusable Scrap components are reused first;
+                  only the remaining quantity is reserved from In Store, and any balance is routed to Procurement / PO.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                aria-label="Close popup"
+                title="Close"
+                onClick={() => {
+                  setShowScrapMrModal(false);
+                  setScrapMrDetails(null);
+                }}
+                className="shrink-0 rounded-lg border border-border bg-background px-3 py-1.5 text-xl font-semibold leading-none text-foreground shadow-sm transition hover:bg-muted"
+              >
+                ×
+              </button>
             </div>
 
             {scrapMrLoading ? (
@@ -7266,21 +8785,51 @@ columns={[...([
       )}
 
       {showBomModal && (
-        <div className="fixed inset-0 z-[9999] bg-black/50 dark:bg-black/70 flex items-center justify-center px-4">
-          <div className="bg-white dark:bg-slate-950 rounded-2xl w-[1450px] max-w-[97vw] max-h-[85vh] overflow-hidden shadow-2xl border border-gray-200 dark:border-slate-700">
+        <div
+          className="fixed inset-0 z-[9999] bg-black/50 dark:bg-black/70 flex items-center justify-center p-2 sm:p-3"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setShowBomModal(false);
+              setBomDetails(null);
+              setRdDetails(null);
+              setExpandedDetailCategories([]);
+            }
+          }}
+        >
+          <div
+            className="bg-white dark:bg-slate-950 rounded-2xl w-[99vw] h-[96vh] max-w-none max-h-none overflow-hidden shadow-2xl border border-gray-200 dark:border-slate-700 flex flex-col"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
             {/* HEADER */}
-            <div className="px-6 py-4 border-b border-gray-100 dark:border-slate-700">
-              <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                {bomDetails?.title || (bomDetails ? "BOM Details" : "R & D Details")}
-              </h2>
+            <div className="shrink-0 flex items-start justify-between gap-4 px-6 py-4 border-b border-gray-100 dark:border-slate-700">
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                  {bomDetails?.title || (bomDetails ? "BOM Details" : "R & D Details")}
+                </h2>
 
-              <p className="text-sm text-gray-500 mt-1 dark:text-slate-400">
-                {bomDetails?.bom_name || "R & D Components"}
-              </p>
+                <p className="text-sm text-gray-500 mt-1 dark:text-slate-400">
+                  {bomDetails?.bom_name || "R & D Components"}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                aria-label="Close popup"
+                title="Close"
+                onClick={() => {
+                  setShowBomModal(false);
+                  setBomDetails(null);
+                  setRdDetails(null);
+                  setExpandedDetailCategories([]);
+                }}
+                className="shrink-0 rounded-lg border border-border bg-background px-3 py-1.5 text-xl font-semibold leading-none text-foreground shadow-sm transition hover:bg-muted"
+              >
+                ×
+              </button>
             </div>
 
             {bomDetails?.request && (
-              <div className="grid gap-3 border-b border-gray-100 bg-slate-50/70 px-6 py-4 sm:grid-cols-2 lg:grid-cols-4 dark:border-slate-700 dark:bg-slate-900/40">
+              <div className="shrink-0 grid gap-3 border-b border-gray-100 bg-slate-50/70 px-6 py-4 sm:grid-cols-2 lg:grid-cols-4 dark:border-slate-700 dark:bg-slate-900/40">
                 {[
                   ["MR ID", bomDetails.request.material_request_id || bomDetails.request.request_id || "-"],
                   ["Requester", bomDetails.request.requester_name || bomDetails.request.requester || bomDetails.request.created_by || "-"],
@@ -7299,235 +8848,635 @@ columns={[...([
               </div>
             )}
 
+            {(() => {
+              const detailItems =
+                bomDetails?.items ||
+                rdDetails?.rd_items ||
+                [];
+
+              if (!detailItems.length) {
+                return null;
+              }
+
+              const categoryCount =
+                new Set(
+                  detailItems.map((item) =>
+                    normalizeDetailCategory(
+                      item?.category,
+                    ),
+                  ),
+                ).size;
+
+              return (
+                <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 bg-white px-6 py-3 dark:border-slate-700 dark:bg-slate-950">
+                  <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                    Category-wise Components
+                    <span className="ml-2 rounded-full border border-border bg-muted/50 px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                      {categoryCount} categor{categoryCount === 1 ? "y" : "ies"}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={printMrDetails}
+                      className="inline-flex items-center rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
+                    >
+                      Print
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={exportMrDetailsToExcel}
+                      className="inline-flex items-center rounded-lg border border-emerald-600 bg-emerald-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700"
+                    >
+                      Excel
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        expandAllDetailCategories(
+                          detailItems,
+                        )
+                      }
+                      className="inline-flex items-center rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium text-foreground transition hover:bg-muted"
+                    >
+                      Expand All
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={
+                        collapseAllDetailCategories
+                      }
+                      className="inline-flex items-center rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium text-foreground transition hover:bg-muted"
+                    >
+                      Collapse All
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+
             {renderPhysicalDroneInstances(
               bomDetails?.drone_instances || rdDetails?.drone_instances || [],
             )}
 
-            <div className="overflow-auto max-h-[62vh] bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100">
-              <table className="w-full text-sm">
-                {/* ================= BOM ================= */}
-                {bomDetails ? (
-                  <>
-                    <thead className="sticky top-0 bg-gradient-to-b from-slate-50 to-slate-100 text-slate-700 border-b border-slate-200 dark:from-slate-800 dark:to-slate-900 dark:text-slate-100 dark:border-slate-700">
-                      <tr>
-                        <th className="px-5 py-3 text-center">Component ID</th>
-                        <th className="px-5 py-3 text-center">Component Name</th>
-                        <th className="px-5 py-3 text-center">Category</th>
-                        <th className="px-5 py-3 text-center">Component Type</th>
-                        <th className="px-5 py-3 text-center">Specification</th>
-                        <th className="px-5 py-3 text-center">HSN No</th>
-                        <th className="px-5 py-3 text-center">Requested Qty</th>
-                        <th className="px-5 py-3 text-center">UOM</th>
-                        <th className="px-5 py-3 text-center">Delivered</th>
-                        <th className="px-5 py-3 text-center">QC Passed</th>
-                        <th className="px-5 py-3 text-center">Issued to Engineer</th>
-                        <th className="px-5 py-3 text-center">Remaining</th>
-                        <th className="px-5 py-3 text-center">Component Status</th>
-                        <th className="px-5 py-3 text-center">In Store at MR Creation</th>
-                        <th className="px-5 py-3 text-center">Reserved by Other MR</th>
-                        <th className="px-5 py-3 text-center">Available for this MR</th>
-                        <th className="px-5 py-3 text-center">Stock Status</th>
-                        {shouldShowProjectQuantityColumn(
-                          bomDetails?.items,
-                          bomDetails?.request,
-                        ) && (
-                          <th className="px-5 py-3 text-center">Project Qty</th>
-                        )}
-                      </tr>
-                    </thead>
+            <div
+              className="min-h-0 flex-1 overflow-auto overscroll-contain bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+              style={{
+                scrollbarGutter: "stable both-edges",
+                WebkitOverflowScrolling: "touch",
+              }}
+            >
+              <table className="w-full min-w-[1550px] text-sm">
+                {(() => {
+                  const detailItems =
+                    bomDetails?.items ||
+                    rdDetails?.rd_items ||
+                    [];
 
-                    <tbody>
-                      {bomDetails.items?.map((item, i) => (
-                        <tr key={i}>
-                          <td className="px-5 py-3 text-center font-medium">
-                            {item.component_code || item.component_id || "-"}
-                          </td>
-                          <td className="px-5 py-3 text-center font-medium">
-                            {item.component_name || "Unknown component"}
-                          </td>
-                          <td className="px-5 py-3 text-center">{item.category || "-"}</td>
-                          <td className="px-5 py-3 text-center">
-                            {item.component_type || item.component?.component_type || "-"}
-                          </td>
-                          <td className="px-5 py-3 text-center">
-                            {item.specification || item.specifications || item.component?.specifications || item.component?.specification || "-"}
-                          </td>
-                          <td className="px-5 py-3 text-center">
-                            {item.hsn_no || item.hsn_numbers || item.component?.hsn_no || "-"}
-                          </td>
-                          <td className="px-5 py-3 text-center">
-                            {item.quantity}
-                          </td>
-                          <td className="px-5 py-3 text-center">
-                            {item.unit || item.uom || "-"}
-                          </td>
-                          <td className="px-5 py-3 text-center font-semibold">
-                            {Number(item.delivered_quantity || 0)}
-                          </td>
-                          <td className="px-5 py-3 text-center font-semibold">
-                            {Number(item.qc_passed_quantity || 0)}
-                          </td>
-                          <td className="px-5 py-3 text-center font-semibold text-blue-700">
-                            {getIssuedToEngineerQuantity(
+                  const detailRequest =
+                    bomDetails?.request ||
+                    rdDetails ||
+                    {};
+
+                  const groupedRows =
+                    new Map();
+
+                  detailItems.forEach(
+                    (item, index) => {
+                      const category =
+                        normalizeDetailCategory(
+                          item?.category,
+                        );
+
+                      if (
+                        !groupedRows.has(
+                          category,
+                        )
+                      ) {
+                        groupedRows.set(
+                          category,
+                          [],
+                        );
+                      }
+
+                      groupedRows
+                        .get(category)
+                        .push({
+                          item,
+                          index,
+                        });
+                    },
+                  );
+
+                  const showProjectQuantity =
+                    shouldShowProjectQuantityColumn(
+                      detailItems,
+                      detailRequest,
+                    );
+
+                  const totalColumns =
+                    16 +
+                    (showProjectQuantity
+                      ? 1
+                      : 0);
+
+                  /*
+                   * FINAL Custom BOM popup grouping:
+                   *
+                   * STATUS FIRST, CATEGORY SECOND.
+                   *
+                   * A category may appear in more than one section.
+                   * Example:
+                   *   ACCESSORIES has 1 unchanged + 1 edited
+                   *   -> ACCESSORIES appears under UNCHANGED
+                   *   -> ACCESSORIES also appears under EDITED
+                   *
+                   * Display order is always:
+                   *   1. UNCHANGED / NEW
+                   *   2. EDITED
+                   *   3. DELETED
+                   */
+                  const popupSections = [
+                    {
+                      key: "UNCHANGED",
+                      label: "Unchanged / New Components",
+                      headerClass:
+                        "border-slate-200 bg-white text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100",
+                      categoryClass:
+                        "bg-slate-50/90 dark:bg-slate-900/70",
+                      items: detailItems.filter(
+                        (item) =>
+                          item?._audit_deleted !== true &&
+                          item?._audit_edited !== true,
+                      ),
+                    },
+                    {
+                      key: "EDITED",
+                      label: "Edited Components",
+                      headerClass:
+                        "border-amber-300 bg-amber-100 text-amber-950 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200",
+                      categoryClass:
+                        "bg-amber-50/80 dark:bg-amber-950/20",
+                      items: detailItems.filter(
+                        (item) =>
+                          item?._audit_deleted !== true &&
+                          item?._audit_edited === true,
+                      ),
+                    },
+                    {
+                      key: "DELETED",
+                      label: "Deleted Components",
+                      headerClass:
+                        "border-red-300 bg-red-100 text-red-950 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200",
+                      categoryClass:
+                        "bg-red-50/80 dark:bg-red-950/20",
+                      items: detailItems.filter(
+                        (item) =>
+                          item?._audit_deleted === true,
+                      ),
+                    },
+                  ]
+                    .filter(
+                      (section) =>
+                        section.items.length > 0,
+                    )
+                    .map((section) => {
+                      const categoryMap =
+                        new Map();
+
+                      section.items.forEach(
+                        (item, index) => {
+                          const category =
+                            normalizeDetailCategory(
+                              item?.category,
+                            );
+
+                          if (
+                            !categoryMap.has(
+                              category,
+                            )
+                          ) {
+                            categoryMap.set(
+                              category,
+                              [],
+                            );
+                          }
+
+                          categoryMap
+                            .get(category)
+                            .push({
                               item,
-                              bomDetails?.request,
-                            )}
-                          </td>
-                          <td className="px-5 py-3 text-center">
-                            {getComponentRemainingQuantity(
-                              item,
-                              bomDetails?.request,
-                            )}
-                          </td>
-                          <td className="px-5 py-3 text-center">
-                            {renderComponentWorkflowStatus(
-                              item,
-                              bomDetails?.request,
-                            )}
-                          </td>
-                          <td className="px-5 py-3 text-center font-semibold">
-                            {getInventoryQuantityForRequestItem(item)}
-                          </td>
-                          <td className="px-5 py-3 text-center">
-                            {getReservedByOtherMrQuantity(item)}
-                          </td>
-                          <td className="px-5 py-3 text-center font-semibold">
-                            {getAvailableForRequestQuantity(item)}
-                          </td>
-                          <td className="px-5 py-3 text-center">
-                            {renderReservationInfo(item)}
-                          </td>
-                          {shouldShowProjectQuantityColumn(
-                            bomDetails?.items,
-                            bomDetails?.request,
-                          ) && (
-                            <td className="px-5 py-3 text-center">
-                              {projectInventoryLoading
-                                ? "Loading..."
-                                : renderProjectQuantity(
-                                    item,
-                                    bomDetails?.request,
-                                  )}
-                            </td>
+                              index,
+                            });
+                        },
+                      );
+
+                      return {
+                        ...section,
+                        categories:
+                          Array.from(
+                            categoryMap.entries(),
+                          ).sort(
+                            (
+                              [leftCategory],
+                              [rightCategory],
+                            ) =>
+                              String(
+                                leftCategory,
+                              ).localeCompare(
+                                String(
+                                  rightCategory,
+                                ),
+                              ),
+                          ),
+                      };
+                    });
+
+                  return (
+                    <>
+                      <thead className="sticky top-0 z-10 bg-gradient-to-b from-slate-50 to-slate-100 text-slate-700 border-b border-slate-200 dark:from-slate-800 dark:to-slate-900 dark:text-slate-100 dark:border-slate-700">
+                        <tr>
+                          <th className="px-5 py-3 text-center">Category</th>
+                          <th className="px-5 py-3 text-center">Component ID</th>
+                          <th className="px-5 py-3 text-center">Component Type</th>
+                          <th className="px-5 py-3 text-center">Specification</th>
+                          <th className="px-5 py-3 text-center">HSN No</th>
+                          <th className="px-5 py-3 text-center">Requested Qty</th>
+                          <th className="px-5 py-3 text-center">UOM</th>
+                          <th className="px-5 py-3 text-center">Delivered</th>
+                          <th className="px-5 py-3 text-center">QC Passed</th>
+                          <th className="px-5 py-3 text-center">Issued to Engineer</th>
+                          <th className="px-5 py-3 text-center">Remaining</th>
+                          <th className="px-5 py-3 text-center">Component Status</th>
+                          <th className="px-5 py-3 text-center">In Store at MR Creation</th>
+                          <th className="px-5 py-3 text-center">Reserved by Other MR</th>
+                          <th className="px-5 py-3 text-center">Available for this MR</th>
+                          <th className="px-5 py-3 text-center">Stock Status</th>
+                          {showProjectQuantity && (
+                            <th className="px-5 py-3 text-center">Project Qty</th>
                           )}
                         </tr>
-                      ))}
-                    </tbody>
-                  </>
-                ) : (
-                  <>
-                    {/* ================= R&D ================= */}
+                      </thead>
 
-                    <thead className="sticky top-0 bg-gradient-to-b from-slate-50 to-slate-100 text-slate-700 border-b border-slate-200 dark:from-slate-800 dark:to-slate-900 dark:text-slate-100 dark:border-slate-700">
-                      <tr>
-                        <th className="px-5 py-3 text-center">Component ID</th>
-                        <th className="px-5 py-3 text-center">Component</th>
-                        <th className="px-5 py-3 text-center">Category</th>
-                        <th className="px-5 py-3 text-center">Component Type</th>
-                        <th className="px-5 py-3 text-center">Specification</th>
-                        <th className="px-5 py-3 text-center">HSN No</th>
-                        <th className="px-5 py-3 text-center">Requested Qty</th>
-                        <th className="px-5 py-3 text-center">UOM</th>
-                        <th className="px-5 py-3 text-center">Delivered</th>
-                        <th className="px-5 py-3 text-center">QC Passed</th>
-                        <th className="px-5 py-3 text-center">Issued to Engineer</th>
-                        <th className="px-5 py-3 text-center">Remaining</th>
-                        <th className="px-5 py-3 text-center">Component Status</th>
-                        <th className="px-5 py-3 text-center">In Store at MR Creation</th>
-                        <th className="px-5 py-3 text-center">Reserved by Other MR</th>
-                        <th className="px-5 py-3 text-center">Available for this MR</th>
-                        <th className="px-5 py-3 text-center">Stock Status</th>
-                        {shouldShowProjectQuantityColumn(
-                          rdDetails?.rd_items,
-                          rdDetails,
-                        ) && (
-                          <th className="px-5 py-3 text-center">Project Qty</th>
+                      <tbody>
+                        {popupSections.map(
+                          (section) => (
+                            <Fragment
+                              key={`mr-detail-section-${section.key}`}
+                            >
+                              {/* STATUS SECTION HEADER */}
+                              <tr
+                                className={`border-y-2 ${section.headerClass}`}
+                              >
+                                <td
+                                  colSpan={
+                                    totalColumns
+                                  }
+                                  className="px-5 py-3"
+                                >
+                                  <div className="flex items-center justify-between gap-3">
+                                    <span className="text-sm font-bold uppercase tracking-wide">
+                                      {
+                                        section.label
+                                      }
+                                    </span>
+
+                                    <span className="rounded-full border border-current/20 bg-white/60 px-2.5 py-1 text-xs font-semibold dark:bg-black/10">
+                                      {
+                                        section.items.length
+                                      }{" "}
+                                      component
+                                      {section.items.length ===
+                                      1
+                                        ? ""
+                                        : "s"}
+                                    </span>
+                                  </div>
+                                </td>
+                              </tr>
+
+                              {section.categories.map(
+                                ([
+                                  category,
+                                  categoryRows,
+                                ]) => {
+                                  const accordionKey =
+                                    getDetailAccordionKey(
+                                      section.key,
+                                      category,
+                                    );
+
+                                  const isExpanded =
+                                    expandedDetailCategories.includes(
+                                      accordionKey,
+                                    );
+
+                                  return (
+                                    <Fragment
+                                      key={`mr-detail-${section.key}-${category}`}
+                                    >
+                                      {/* CATEGORY ACCORDION ROW */}
+                                      <tr
+                                        className={`border-b border-border ${section.categoryClass}`}
+                                      >
+                                        <td
+                                          colSpan={
+                                            totalColumns
+                                          }
+                                          className="p-0"
+                                        >
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              toggleDetailCategory(
+                                                accordionKey,
+                                              )
+                                            }
+                                            className="flex w-full items-center justify-between gap-4 px-5 py-3 text-left transition hover:brightness-[0.98] dark:hover:brightness-110"
+                                          >
+                                            <div className="flex items-center gap-3">
+                                              <span className="text-base font-bold">
+                                                {isExpanded
+                                                  ? "▼"
+                                                  : "▶"}
+                                              </span>
+
+                                              <span className="font-semibold">
+                                                {
+                                                  category
+                                                }
+                                              </span>
+
+                                              <span className="rounded-full border border-border bg-background px-2 py-0.5 text-xs text-muted-foreground">
+                                                {
+                                                  categoryRows.length
+                                                }{" "}
+                                                item
+                                                {categoryRows.length ===
+                                                1
+                                                  ? ""
+                                                  : "s"}
+                                              </span>
+                                            </div>
+
+                                            <div className="text-xs font-semibold">
+                                              {section.key ===
+                                                "EDITED" && (
+                                                <span className="rounded-full border border-amber-300 bg-amber-100 px-2 py-1 text-amber-800 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
+                                                  {
+                                                    categoryRows.length
+                                                  }{" "}
+                                                  edited
+                                                </span>
+                                              )}
+
+                                              {section.key ===
+                                                "DELETED" && (
+                                                <span className="rounded-full border border-red-300 bg-red-100 px-2 py-1 text-red-700 dark:border-red-800 dark:bg-red-950/50 dark:text-red-300">
+                                                  {
+                                                    categoryRows.length
+                                                  }{" "}
+                                                  deleted
+                                                </span>
+                                              )}
+
+                                              {section.key ===
+                                                "UNCHANGED" && (
+                                                <span className="rounded-full border border-slate-300 bg-white px-2 py-1 text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                                                  {
+                                                    categoryRows.length
+                                                  }{" "}
+                                                  unchanged/new
+                                                </span>
+                                              )}
+                                            </div>
+                                          </button>
+                                        </td>
+                                      </tr>
+
+                                      {/* COMPONENT ROWS */}
+                                      {isExpanded &&
+                                        categoryRows.map(
+                                          ({
+                                            item,
+                                            index,
+                                          }) => {
+                                            const isDeleted =
+                                              item?._audit_deleted ===
+                                              true;
+
+                                            const isEdited =
+                                              item?._audit_edited ===
+                                                true &&
+                                              !isDeleted;
+
+                                            const isNew =
+                                              item?._audit_new ===
+                                                true &&
+                                              !isDeleted &&
+                                              !isEdited;
+
+                                            const rowClassName =
+                                              isDeleted
+                                                ? "border-b border-red-300 bg-red-100/90 text-red-950 dark:border-red-900 dark:bg-red-950/40 dark:text-red-100"
+                                                : isEdited
+                                                  ? "border-b border-amber-300 bg-amber-100/80 dark:border-amber-900 dark:bg-amber-950/30"
+                                                  : "border-b border-slate-100 bg-white hover:bg-slate-50/60 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-900/40";
+
+                                            return (
+                                              <tr
+                                                key={`mr-detail-${section.key}-row-${
+                                                  item?.id ??
+                                                  item?.component_code ??
+                                                  index
+                                                }-${index}`}
+                                                className={
+                                                  rowClassName
+                                                }
+                                              >
+                                                <td className="px-5 py-3 text-center font-semibold">
+                                                  {item.category ||
+                                                    "-"}
+                                                </td>
+
+                                                <td className="px-5 py-3 text-center font-medium">
+                                                  <div className="flex flex-col items-center gap-1">
+                                                    <span>
+                                                      {item.component_code ||
+                                                        item.component_id ||
+                                                        "-"}
+                                                    </span>
+
+                                                    {isEdited && (
+                                                      <span className="rounded-full border border-amber-400 bg-amber-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-800">
+                                                        Edited
+                                                      </span>
+                                                    )}
+
+                                                    {isDeleted && (
+                                                      <span className="rounded-full border border-red-400 bg-red-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red-700">
+                                                        Deleted
+                                                      </span>
+                                                    )}
+
+                                                    {isNew && (
+                                                      <span className="rounded-full border border-sky-400 bg-sky-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sky-700">
+                                                        New
+                                                      </span>
+                                                    )}
+                                                  </div>
+                                                </td>
+
+                                                <td className="px-5 py-3 text-center">
+                                                  {item.component_type ||
+                                                    item.component
+                                                      ?.component_type ||
+                                                    "-"}
+                                                </td>
+
+                                                <td className="px-5 py-3 text-center">
+                                                  {item.specification ||
+                                                    item.specifications ||
+                                                    item.component
+                                                      ?.specifications ||
+                                                    item.component
+                                                      ?.specification ||
+                                                    "-"}
+                                                </td>
+
+                                                <td className="px-5 py-3 text-center">
+                                                  {item.hsn_no ||
+                                                    item.hsn_numbers ||
+                                                    item.component
+                                                      ?.hsn_no ||
+                                                    "-"}
+                                                </td>
+
+                                                <td className="px-5 py-3 text-center font-semibold">
+                                                  {Number(
+                                                    item.quantity ||
+                                                      0,
+                                                  )}
+                                                </td>
+
+                                                <td className="px-5 py-3 text-center">
+                                                  {item.unit ||
+                                                    item.uom ||
+                                                    "-"}
+                                                </td>
+
+                                                <td className="px-5 py-3 text-center font-semibold">
+                                                  {isDeleted
+                                                    ? "-"
+                                                    : Number(
+                                                        item.delivered_quantity ||
+                                                          0,
+                                                      )}
+                                                </td>
+
+                                                <td className="px-5 py-3 text-center font-semibold">
+                                                  {isDeleted
+                                                    ? "-"
+                                                    : Number(
+                                                        item.qc_passed_quantity ||
+                                                          0,
+                                                      )}
+                                                </td>
+
+                                                <td className="px-5 py-3 text-center font-semibold text-blue-700 dark:text-blue-300">
+                                                  {isDeleted
+                                                    ? "-"
+                                                    : getIssuedToEngineerQuantity(
+                                                        item,
+                                                        detailRequest,
+                                                      )}
+                                                </td>
+
+                                                <td className="px-5 py-3 text-center">
+                                                  {isDeleted
+                                                    ? "-"
+                                                    : getComponentRemainingQuantity(
+                                                        item,
+                                                        detailRequest,
+                                                      )}
+                                                </td>
+
+                                                <td className="px-5 py-3 text-center">
+                                                  {isDeleted ? (
+                                                    <span className="rounded-full border border-red-300 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
+                                                      Deleted from Custom BOM
+                                                    </span>
+                                                  ) : (
+                                                    renderComponentWorkflowStatus(
+                                                      item,
+                                                      detailRequest,
+                                                    )
+                                                  )}
+                                                </td>
+
+                                                <td className="px-5 py-3 text-center font-semibold">
+                                                  {isDeleted
+                                                    ? "-"
+                                                    : getInventoryQuantityForRequestItem(
+                                                        item,
+                                                      )}
+                                                </td>
+
+                                                <td className="px-5 py-3 text-center">
+                                                  {isDeleted
+                                                    ? "-"
+                                                    : getReservedByOtherMrQuantity(
+                                                        item,
+                                                      )}
+                                                </td>
+
+                                                <td className="px-5 py-3 text-center font-semibold">
+                                                  {isDeleted
+                                                    ? "-"
+                                                    : getAvailableForRequestQuantity(
+                                                        item,
+                                                      )}
+                                                </td>
+
+                                                <td className="px-5 py-3 text-center">
+                                                  {isDeleted
+                                                    ? "-"
+                                                    : renderReservationInfo(
+                                                        item,
+                                                      )}
+                                                </td>
+
+                                                {showProjectQuantity && (
+                                                  <td className="px-5 py-3 text-center">
+                                                    {isDeleted
+                                                      ? "-"
+                                                      : projectInventoryLoading
+                                                        ? "Loading..."
+                                                        : renderProjectQuantity(
+                                                            item,
+                                                            detailRequest,
+                                                          )}
+                                                  </td>
+                                                )}
+                                              </tr>
+                                            );
+                                          },
+                                        )}
+                                    </Fragment>
+                                  );
+                                },
+                              )}
+                            </Fragment>
+                          ),
                         )}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rdDetails?.rd_items?.map((item, i) => {
-                        const qty = Number(item.quantity || 0);
-
-                        return (
-                          <tr key={i}>
-                            <td className="px-5 py-3 text-center font-medium">
-                              {item.component_code || item.component_id || "-"}
-                            </td>
-                            <td className="px-5 py-3 text-center font-medium">
-                              {item.component_name || item.component || "Unknown component"}
-                            </td>
-                            <td className="px-5 py-3 text-center">{item.category || "-"}</td>
-                            <td className="px-5 py-3 text-center">
-                              {item.component_type || item.component?.component_type || "-"}
-                            </td>
-                            <td className="px-5 py-3 text-center">
-                              {item.specification || item.specifications || item.component?.specifications || item.component?.specification || "-"}
-                            </td>
-                            <td className="px-5 py-3 text-center">
-                              {item.hsn_no || item.hsn_numbers || item.component?.hsn_no || "-"}
-                            </td>
-                            <td className="px-5 py-3 text-center">
-                              {qty}
-                            </td>
-                            <td className="px-5 py-3 text-center">
-                              {item.unit || item.uom || "-"}
-                            </td>
-                            <td className="px-5 py-3 text-center font-semibold">
-                              {Number(item.delivered_quantity || 0)}
-                            </td>
-                            <td className="px-5 py-3 text-center font-semibold">
-                              {Number(item.qc_passed_quantity || 0)}
-                            </td>
-                            <td className="px-5 py-3 text-center font-semibold text-blue-700">
-                              {getIssuedToEngineerQuantity(
-                                item,
-                                rdDetails,
-                              )}
-                            </td>
-                            <td className="px-5 py-3 text-center">
-                              {getComponentRemainingQuantity(
-                                item,
-                                rdDetails,
-                              )}
-                            </td>
-                            <td className="px-5 py-3 text-center">
-                              {renderComponentWorkflowStatus(
-                                item,
-                                rdDetails,
-                              )}
-                            </td>
-                            <td className="px-5 py-3 text-center font-semibold">
-                              {getInventoryQuantityForRequestItem(item)}
-                            </td>
-                            <td className="px-5 py-3 text-center">
-                              {getReservedByOtherMrQuantity(item)}
-                            </td>
-                            <td className="px-5 py-3 text-center font-semibold">
-                              {getAvailableForRequestQuantity(item)}
-                            </td>
-                            <td className="px-5 py-3 text-center">
-                              {renderReservationInfo(item)}
-                            </td>
-                            {shouldShowProjectQuantityColumn(
-                              rdDetails?.rd_items,
-                              rdDetails,
-                            ) && (
-                              <td className="px-5 py-3 text-center">
-                                {projectInventoryLoading
-                                  ? "Loading..."
-                                  : renderProjectQuantity(
-                                      item,
-                                      rdDetails,
-                                    )}
-                              </td>
-                            )}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </>
-                )}
+                      </tbody>
+                    </>
+                  );
+                })()}
               </table>
             </div>
             <div className="flex justify-between items-center px-6 py-4 border-t border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-950">

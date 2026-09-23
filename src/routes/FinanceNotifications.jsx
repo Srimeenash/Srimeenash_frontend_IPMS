@@ -2499,7 +2499,8 @@ export default function FinanceNotifications() {
       <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm dark:border-slate-700 dark:bg-slate-950">
         <div className="overflow-x-auto">
           <div className="min-w-[1450px]">
-            <div className="grid grid-cols-[1.05fr_1.15fr_1.15fr_1.6fr_.7fr_.95fr_.9fr_1fr_.95fr_1.35fr] items-center border-b border-slate-200 bg-slate-100 px-6 py-4 text-xs font-semibold uppercase tracking-wide text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+            <div className="grid grid-cols-[0.4fr_1.05fr_1.15fr_1.15fr_1.6fr_.7fr_.95fr_.9fr_1fr_.95fr_1.35fr] items-center border-b border-slate-200 bg-slate-100 px-6 py-4 text-xs font-semibold uppercase tracking-wide text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+              <div className="text-center">S.No</div>
               <div className="text-center">PO ID</div>
               <div className="text-center">MR ID</div>
               <div className="text-center">Vendor</div>
@@ -2523,7 +2524,7 @@ export default function FinanceNotifications() {
                   No Finance Notifications
                 </div>
               ) : (
-                notifications.map((notification) => {
+                notifications.map((notification, index) => {
                   const po =
                     notification.poDetails || {};
 
@@ -2589,8 +2590,9 @@ export default function FinanceNotifications() {
                   return (
                     <div
                       key={notification.id}
-                      className="grid grid-cols-[1.05fr_1.15fr_1.15fr_1.6fr_.7fr_.95fr_.9fr_1fr_.95fr_1.35fr] items-center px-6 py-4 text-sm transition-colors hover:bg-slate-50 dark:hover:bg-slate-900"
+                      className="grid grid-cols-[0.4fr_1.05fr_1.15fr_1.15fr_1.6fr_.7fr_.95fr_.9fr_1fr_.95fr_1.35fr] items-center px-6 py-4 text-sm transition-colors hover:bg-slate-50 dark:hover:bg-slate-900"
                     >
+                      <div className="text-center font-semibold">{index + 1}</div>
                       {/* PO ID */}
                       <div className="text-center">
                         <button
@@ -2811,7 +2813,8 @@ export default function FinanceNotifications() {
 
       {activeTab === "QC_FAILED" && (
         <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-          <div className="grid grid-cols-[1.1fr_1.2fr_1.7fr_.7fr_1fr_1.4fr] items-center border-b border-border bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          <div className="grid grid-cols-[0.4fr_1.1fr_1.2fr_1.7fr_.7fr_1fr_1.4fr] items-center border-b border-border bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <div className="text-center">S.No</div>
             <div>Source PO</div>
             <div>Action</div>
             <div>Component</div>
@@ -2832,7 +2835,7 @@ export default function FinanceNotifications() {
               </div>
             ) : (
               qcFailedNotifications.map(
-                (notification) => {
+                (notification, index) => {
                   const inward =
                     notification?.inwardDetails ||
                     {};
@@ -2905,8 +2908,9 @@ export default function FinanceNotifications() {
                   return (
                     <div
                       key={processKey}
-                      className="grid grid-cols-[1.1fr_1.2fr_1.7fr_.7fr_1fr_1.4fr] items-center px-4 py-4 text-sm hover:bg-muted/20"
+                      className="grid grid-cols-[0.4fr_1.1fr_1.2fr_1.7fr_.7fr_1fr_1.4fr] items-center px-4 py-4 text-sm hover:bg-muted/20"
                     >
+                      <div className="text-center font-semibold">{index + 1}</div>
                       <div className="font-semibold">
                         {poNumber || "-"}
                       </div>
@@ -2975,7 +2979,8 @@ export default function FinanceNotifications() {
 
       {activeTab === "CU" && (
         <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-          <div className="grid grid-cols-[1fr_2fr_1fr_1.3fr] bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          <div className="grid grid-cols-[0.4fr_1fr_2fr_1fr_1.3fr] bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <div className="text-center">S.No</div>
             <div>Reference</div>
             <div>Returnable Not OK</div>
             <div>Status</div>
@@ -2992,11 +2997,12 @@ export default function FinanceNotifications() {
                 No Returnable Not OK requests waiting for Finance.
               </div>
             ) : (
-              returnableNotifications.map((notification) => {
+              returnableNotifications.map((notification, index) => {
                 const statusValue = String(notification.status || "").toUpperCase();
                 const pending = statusValue === "PENDING_FINANCE";
                 return (
-                  <div key={notification.id} className="grid grid-cols-[1fr_2fr_1fr_1.3fr] items-center px-4 py-4 text-sm">
+                  <div key={notification.id} className="grid grid-cols-[0.4fr_1fr_2fr_1fr_1.3fr] items-center px-4 py-4 text-sm">
+                    <div className="text-center font-semibold">{index + 1}</div>
                     <div className="font-semibold">{notification.reference_id || "-"}</div>
                     <div>
                       <div className="font-medium">{notification.title || "Returnable Not OK"}</div>
@@ -3024,7 +3030,9 @@ export default function FinanceNotifications() {
       {activeTab === "SCRAP" && (
         <div className="w-full overflow-hidden rounded-2xl border border-border bg-card shadow-sm dark:border-slate-700 dark:bg-slate-950">
           <div className="w-full">
-            <div className="grid grid-cols-[0.72fr_1.15fr_0.45fr_1.15fr_0.45fr_0.58fr_0.85fr_0.68fr_1fr_0.7fr_1.55fr] items-center border-b border-slate-200 bg-slate-100 px-1.5 py-2.5 text-[10px] font-semibold uppercase text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+            <div className="grid grid-cols-[0.36fr_0.72fr_1.15fr_0.45fr_1.15fr_0.45fr_0.58fr_0.85fr_0.68fr_1fr_0.7fr_1.55fr] items-center border-b border-slate-200 bg-slate-100 px-1.5 py-2.5 text-[10px] font-semibold uppercase text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                      <div className="text-center font-semibold">{index + 1}</div>
+              <div className="text-center">S.No</div>
               <div className="text-center">Requested By</div>
               <div className="text-center">Scrap Component</div>
               <div className="text-center">Scrap Qty</div>
@@ -3049,7 +3057,7 @@ export default function FinanceNotifications() {
                   No Manager-approved Scrap / Return-QC requests waiting for Finance.
                 </div>
               ) : (
-                scrapNotifications.map((notification) => {
+                scrapNotifications.map((notification, index) => {
                   const scrap =
                     notification.scrapDetails || {};
                   const scrapMetadata =
@@ -3111,14 +3119,24 @@ export default function FinanceNotifications() {
                    * though selected_items/reorder_items contains the reusable
                    * serials. Do not treat an empty array as authoritative.
                    */
+                  const isReturnableQcWorkflow =
+                    [
+                      "RETURNABLE_COMPONENT_QC_V1",
+                      "RETURNABLE_DRONE_QC_V1",
+                    ].includes(
+                      scrapWorkflow
+                    );
+
                   const reusableItems =
                     explicitGoodItems.length
                       ? explicitGoodItems
-                      : reorderItems.length
-                        ? reorderItems
-                        : returnItems.length
-                          ? returnItems
-                          : legacySelectedItems;
+                      : isReturnableQcWorkflow
+                        ? legacySelectedItems
+                        : reorderItems.length
+                          ? reorderItems
+                          : returnItems.length
+                            ? returnItems
+                            : legacySelectedItems;
 
                   const reusableQuantityForDecision =
                     reusableItems.reduce(
@@ -3221,7 +3239,7 @@ export default function FinanceNotifications() {
                         notification.id ||
                         `scrap-${outwardId}`
                       }
-                      className="grid grid-cols-[0.72fr_1.15fr_0.45fr_1.15fr_0.45fr_0.58fr_0.85fr_0.68fr_1fr_0.7fr_1.55fr] items-center px-1.5 py-2.5 transition-colors hover:bg-slate-50 dark:hover:bg-slate-900"
+                      className="grid grid-cols-[0.36fr_0.72fr_1.15fr_0.45fr_1.15fr_0.45fr_0.58fr_0.85fr_0.68fr_1fr_0.7fr_1.55fr] items-center px-1.5 py-2.5 transition-colors hover:bg-slate-50 dark:hover:bg-slate-900"
                     >
                       <div className="px-1 text-center text-sm font-medium">
                         {cleanScrapRequesterName(
@@ -3319,6 +3337,13 @@ export default function FinanceNotifications() {
                             : "border-blue-200 bg-blue-50 text-blue-700"
                         }`}>
                           {managerDecisionLabel} Decision: {managerReorderDecision === "YES" ? "YES" : "NO"}
+                          {isReturnableQcWorkflow && (
+                            <span className="ml-1">
+                              {managerReorderDecision === "YES"
+                                ? "• Finance Approve creates/routes PR/FR"
+                                : "• Finance Approve returns GOOD to In Store"}
+                            </span>
+                          )}
                         </div>
                       </div>
 

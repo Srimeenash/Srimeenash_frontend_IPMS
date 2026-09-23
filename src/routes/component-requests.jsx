@@ -724,6 +724,17 @@ const categoryOptions = Array.from(
         selectionKey="id"
         columns={[
           {
+            key: "sno",
+            header: "S.No",
+            className:
+              "w-[6%] px-2 text-center text-xs whitespace-normal",
+            disableColumnTools: true,
+            render: (_, index) =>
+              (page - 1) * COMPONENT_PAGE_SIZE +
+              index +
+              1,
+          },
+          {
             key: "component_id",
             header: "Component ID",
             className:

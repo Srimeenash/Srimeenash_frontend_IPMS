@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from "react";
+import { Fragment, useRef, useState, useEffect } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { PageShell, PageHeader } from "@/components/app/PageShell";
 import { DataTable } from "@/components/app/DataTable";
@@ -94,6 +94,53 @@ const addDaysToIsoDate = (isoDate, days) => {
   return date.toISOString().slice(0, 10);
 };
 
+/*
+ * GLOBAL Material Request Required Date cutoff.
+ *
+ * Applies to:
+ *   - BOM
+ *   - Custom BOM
+ *   - R&D
+ *   - Returnable
+ *   - Retail Sales
+ *
+ * Rule:
+ *   Before 4:00 PM  -> Required Date = today is allowed.
+ *   At/after 4:00 PM -> Required Date = today is NOT allowed.
+ *                       Tomorrow or a later date is allowed.
+ *
+ * This frontend check uses the user's browser-local time.
+ * The backend independently enforces the same rule.
+ */
+const getLocalIsoDate = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const isAtOrAfterRequiredDateCutoff = (date = new Date()) =>
+  date.getHours() >= 16;
+
+const getMinimumRequiredDateForCurrentTime = (date = new Date()) => {
+  const today = getLocalIsoDate(date);
+
+  return isAtOrAfterRequiredDateCutoff(date)
+    ? addDaysToIsoDate(today, 1)
+    : today;
+};
+
+const getRequiredDateCutoffMessage = (date = new Date()) => {
+  const today = getLocalIsoDate(date);
+  const tomorrow = addDaysToIsoDate(today, 1);
+
+  return (
+    `Required Date is today (${today}), but the current time is 4:00 PM or later.\n\n` +
+    `A Material Request cannot be submitted for today's Required Date after 4:00 PM.\n\n` +
+    `Please change the Required Date to tomorrow (${tomorrow}) or a later date.`
+  );
+};
+
 const createEmptyRequestItem = () => ({
   component: "",
   category: "",
@@ -123,6 +170,7 @@ const [projectsLoading, setProjectsLoading] = useState(false);
     bom: "",
     required_quantity: 1,
     required_date: "",
+    returnable_date: "",
     remarks: "",
     material_request_id: buildMaterialRequestId(1),
   });
@@ -891,6 +939,7 @@ const loadInventoryCounts =
 
 const [componentForm, setComponentForm] = useState({
   component_id: "AC_0001",
+  version: "",
   category: CATEGORY_CHOICES[0],
   component_type: "",
   specifications: "",
@@ -898,11 +947,46 @@ const [componentForm, setComponentForm] = useState({
   sku_no: "",
   part_no: "",
   tally_reference: "",
-  unit_of_measurements: "",
   product_link: "",
 });
 const [requestType, setRequestType] = useState("BOM");
 const [customizedBom, setCustomizedBom] = useState(false);
+
+/*
+ * BOM category accordion.
+ * With large BOMs (50-100+ rows), keep categories collapsed until the user
+ * explicitly opens the category they wants to inspect.
+ */
+const [expandedBomCategories, setExpandedBomCategories] = useState([]);
+
+const normalizeBomCategory = (value) =>
+  String(value || "UNCATEGORIZED").trim().toUpperCase() || "UNCATEGORIZED";
+
+const toggleBomCategory = (category) => {
+  const key = normalizeBomCategory(category);
+
+  setExpandedBomCategories((previous) =>
+    previous.includes(key)
+      ? previous.filter((value) => value !== key)
+      : [...previous, key],
+  );
+};
+
+const expandAllBomCategories = () => {
+  setExpandedBomCategories(
+    Array.from(
+      new Set(
+        (rows || []).map((row) =>
+          normalizeBomCategory(row?.category),
+        ),
+      ),
+    ),
+  );
+};
+
+const collapseAllBomCategories = () => {
+  setExpandedBomCategories([]);
+};
 const [returnablePurpose, setReturnablePurpose] = useState("");
 const [returnableSource, setReturnableSource] = useState("");
 const [selectedDroneMrId, setSelectedDroneMrId] = useState("");
@@ -947,6 +1031,34 @@ const inDroneMrOptions = inDroneRequests.map((request) => {
       "",
   ).trim();
 
+  const droneInstanceId =
+    request?._drone_instance_id ??
+    request?.drone_instance_id ??
+    request?.droneInstanceId ??
+    "";
+
+  const droneInstanceCode = String(
+    request?._drone_instance_code ||
+      request?.drone_instance_code ||
+      request?.droneInstanceCode ||
+      "",
+  ).trim();
+
+  const droneInstanceSuffix = String(
+    request?._drone_instance_suffix ||
+      request?.suffix ||
+      "",
+  ).trim();
+
+  const displayMrNumber = String(
+    request?._drone_instance_display ||
+      (
+        droneInstanceSuffix
+          ? `${mrNumber} / ${droneInstanceSuffix}`
+          : mrNumber
+      ),
+  ).trim();
+
   const project = String(
     request?.project ||
       request?.project_name ||
@@ -960,18 +1072,27 @@ const inDroneMrOptions = inDroneRequests.map((request) => {
     Number(
       request?._in_drone_available_quantity ??
         request?._in_drone_total_quantity ??
-        request?.required_quantity ??
-        request?.drone_quantity ??
-        request?.drone_qty ??
-        request?.quantity ??
-        0,
+        1,
     ) || 0,
     0,
   );
 
   return {
-    value: mrNumber,
-    label: `${mrNumber} | ${project} | ${typeLabel} | Available: ${availableQuantity}`,
+    // Use the physical instance as the unique dropdown key.
+    // Two available drones from the same MR (_01 and _02) must remain
+    // independently selectable.
+    value:
+      droneInstanceId !== undefined &&
+      droneInstanceId !== null &&
+      String(droneInstanceId).trim() !== ""
+        ? `INSTANCE:${droneInstanceId}`
+        : droneInstanceCode || displayMrNumber || mrNumber,
+    label: displayMrNumber || mrNumber,
+    mrNumber,
+    displayMrNumber: displayMrNumber || mrNumber,
+    droneInstanceId,
+    droneInstanceCode,
+    droneInstanceSuffix,
     project,
     typeLabel,
     availableQuantity,
@@ -992,16 +1113,19 @@ const selectedDroneMrOption =
  * required_quantity is the normal MR drone quantity. The extra fallbacks keep
  * older API responses compatible.
  */
-const selectedDroneMrTotalQuantity = Math.max(
-  Number(
-    selectedDroneMrOption?.request?.required_quantity ??
-      selectedDroneMrOption?.request?.drone_quantity ??
-      selectedDroneMrOption?.request?.drone_qty ??
-      selectedDroneMrOption?.request?.quantity ??
-      0,
-  ) || 0,
-  0,
-);
+const selectedDroneMrTotalQuantity =
+  selectedDroneMrOption?.droneInstanceId
+    ? 1
+    : Math.max(
+        Number(
+          selectedDroneMrOption?.request?.required_quantity ??
+            selectedDroneMrOption?.request?.drone_quantity ??
+            selectedDroneMrOption?.request?.drone_qty ??
+            selectedDroneMrOption?.request?.quantity ??
+            0,
+        ) || 0,
+        0,
+      );
 
 const selectedDroneMrSoldQuantity = Math.max(
   Number(
@@ -1041,6 +1165,7 @@ const returnableMaxDate =
   RETURNABLE_FOUR_DAY_PURPOSES.has(returnablePurpose)
     ? addDaysToIsoDate(form.date, 4)
     : "";
+
   // Popup state
   const [errors, setErrors] = useState({});
   const [materialRequestIdLoading, setMaterialRequestIdLoading] = useState(true);
@@ -1083,28 +1208,48 @@ const getNextComponentId = (componentRows = [], category = "ACCESSORIES") => {
     return "";
   }
 
+  /*
+   * Component Master uses ONE GLOBAL running sequence across categories.
+   *
+   * Example:
+   *   AC_0001
+   *   AF_0002
+   *   EL_0003
+   *   PL_0004
+   *
+   * Therefore, if PL_0004 is currently the highest Component ID:
+   *   new ACCESSORIES -> AC_0005
+   *   next ELECTRICALS -> EL_0006
+   *
+   * IMPORTANT:
+   * Do not filter by the selected category when finding the highest number.
+   * Only the PREFIX comes from the selected category.
+   */
   const idPattern = /^[A-Z]+_(\d{4})$/i;
 
-  const highestSequence = componentRows.reduce((highest, component) => {
-    const componentId = String(
-      component?.component_id ||
-        component?.component_code ||
-        component?.code ||
-        ""
-    ).trim();
+  const highestSequence = (componentRows || []).reduce(
+    (highest, component) => {
+      const componentId = String(
+        component?.component_id ||
+          component?.component_code ||
+          component?.code ||
+          ""
+      ).trim();
 
-    const match = componentId.match(idPattern);
+      const match = componentId.match(idPattern);
 
-    if (!match) {
-      return highest;
-    }
+      if (!match) {
+        return highest;
+      }
 
-    const sequence = Number(match[1]);
+      const sequence = Number(match[1]);
 
-    return Number.isFinite(sequence)
-      ? Math.max(highest, sequence)
-      : highest;
-  }, 0);
+      return Number.isFinite(sequence)
+        ? Math.max(highest, sequence)
+        : highest;
+    },
+    0,
+  );
 
   return `${prefix}_${String(highestSequence + 1).padStart(4, "0")}`;
 };
@@ -1157,14 +1302,13 @@ async function openAddComponentModal() {
 
   setComponentForm({
     component_id: getNextComponentId(componentRows, CATEGORY_CHOICES[0]),
-    category: CATEGORY_CHOICES[0],
+      category: CATEGORY_CHOICES[0],
     component_type: "",
     specifications: "",
     hsn_no: "",
     sku_no: "",
     part_no: "",
     tally_reference: "",
-    unit_of_measurements: "",
     product_link: "",
   });
 
@@ -1180,8 +1324,7 @@ async function loadNextMaterialRequestId() {
   try {
     const [
       data,
-      outwardData,
-      componentUsageData,
+      droneInstancesData,
     ] = await Promise.all([
       fetchAuthenticatedJson(
         `${config.baseURL}/materialrequest/material-requests/?page_size=1000`,
@@ -1194,19 +1337,14 @@ async function loadNextMaterialRequestId() {
         return [];
       }),
       fetchAuthenticatedJson(
-        `${config.baseURL}/outward/?page_size=5000`
+        `${config.baseURL}/inventory/project-inventory/drone-instances/`,
+        {
+          cache: "no-store",
+          timeoutMs: 10000,
+        },
       ).catch((error) => {
         console.warn(
-          "Unable to load Sales status for In-Drone MR options:",
-          error,
-        );
-        return [];
-      }),
-      fetchAuthenticatedJson(
-        `${config.baseURL}/component-usage/?page_size=5000`
-      ).catch((error) => {
-        console.warn(
-          "Unable to load Flight Test / Demo / Event allocations for In-Drone MR options:",
+          "Unable to load physical In-Drone instances for Returnable:",
           error,
         );
         return [];
@@ -1219,55 +1357,73 @@ async function loadNextMaterialRequestId() {
       ? data.results
       : [];
 
-    const outwardRows = Array.isArray(outwardData)
-      ? outwardData
-      : Array.isArray(outwardData?.results)
-      ? outwardData.results
-      : [];
-
-    const componentUsageRows = Array.isArray(
-      componentUsageData,
+    const droneInstanceRows = Array.isArray(
+      droneInstancesData,
     )
-      ? componentUsageData
-      : Array.isArray(componentUsageData?.results)
-        ? componentUsageData.results
+      ? droneInstancesData
+      : Array.isArray(droneInstancesData?.results)
+        ? droneInstancesData.results
         : [];
 
     /*
-     * Build reserved + approved Sales quantity per MR from Outward -> SALES.
+     * RETURNABLE -> DRONE SOURCE OF TRUTH
+     * -----------------------------------
+     * The Inventory -> In Drone page is physical-instance based:
      *
-     * One sale can create one outward row per component, all with the same
-     * invoice and drone quantity. Group by MR + invoice and use MAX quantity
-     * exactly like the Inventory -> In Drone page, otherwise a 1-drone sale
-     * could be counted multiple times because of its BOM components.
+     *   MR-... / _01
+     *   MR-... / _02
+     *
+     * Only a physical instance whose backend status is AVAILABLE shows the
+     * normal "Sale" action in In Drone. Use that exact same rule here.
+     *
+     * Therefore this dropdown MUST NOT contain:
+     * - RETURNABLE_PENDING / RETURNABLE_ACTIVE
+     * - RETURN_QC_PENDING / QC_FAILED
+     * - SALE_PENDING / SOLD
+     * - SCRAP_PENDING / SCRAPPED / SCRAPPED_REORDERED
+     *
+     * If only MR-260915-00004 / _01 has the normal Sale action in In Drone,
+     * this Returnable Drone dropdown will contain only MR-260915-00004 / _01.
      */
-    const salesBatchByKey = new Map();
+    const requestByReference = new Map();
 
-    outwardRows
-      .filter((row) => {
-        const outwardType = String(
-          row?.outward_type ||
-            row?.type ||
-            "",
+    requestList.forEach((request) => {
+      [
+        request?.id,
+        request?.pk,
+        request?.material_request_id,
+        request?.request_id,
+        request?.mr_id,
+      ]
+        .filter(
+          (value) =>
+            value !== undefined &&
+            value !== null &&
+            String(value).trim() !== "",
         )
-          .trim()
-          .toUpperCase();
+        .forEach((value) => {
+          requestByReference.set(
+            String(value).trim().toUpperCase(),
+            request,
+          );
+        });
+    });
 
-        return outwardType === "SALES";
-      })
-      .forEach((row) => {
-        const approvalStatus = String(
-          row?.approval_status ||
-            row?.status ||
-            "",
-        )
-          .trim()
-          .toUpperCase();
-
-        const references = [
-          row?.material_request,
-          row?.material_request_number,
-          row?.materialRequestNumber,
+    const availablePhysicalDrones = droneInstanceRows
+      .filter(
+        (instance) =>
+          String(instance?.status || "")
+            .trim()
+            .toUpperCase() === "AVAILABLE",
+      )
+      .map((instance) => {
+        const instanceReferences = [
+          instance?.material_request,
+          instance?.material_request_id,
+          instance?.material_request_number,
+          instance?.materialRequest,
+          instance?.materialRequestId,
+          instance?.materialRequestNumber,
         ]
           .filter(
             (value) =>
@@ -1279,330 +1435,88 @@ async function loadNextMaterialRequestId() {
             String(value).trim().toUpperCase(),
           );
 
-        if (!references.length) return;
+        const parentRequest =
+          instanceReferences
+            .map((reference) =>
+              requestByReference.get(reference),
+            )
+            .find(Boolean) || null;
 
-        const invoice = String(
-          row?.invoice_number ||
-            row?.invoiceNumber ||
-            row?.invoice_no ||
-            row?.id ||
-            "SALES",
-        )
-          .trim()
-          .toUpperCase();
+        const mrNumber = String(
+          instance?.material_request_number ||
+            instance?.materialRequestNumber ||
+            parentRequest?.material_request_id ||
+            parentRequest?.request_id ||
+            parentRequest?.mr_id ||
+            "",
+        ).trim();
 
-        const quantity = Math.max(
-          Number(
-            row?.quantity ??
-              row?.qty ??
-              0,
-          ) || 0,
-          0,
+        if (!mrNumber) {
+          return null;
+        }
+
+        const sequence = Math.max(
+          Number(instance?.sequence || 1) || 1,
+          1,
         );
 
-        references.forEach((reference) => {
-          const batchKey = `${reference}|${invoice}`;
-          const previous =
-            salesBatchByKey.get(batchKey) || {
-              reference,
-              quantity: 0,
-              status: "",
-            };
+        const suffix = String(
+          instance?.suffix ||
+            `_${String(sequence).padStart(2, "0")}`,
+        ).trim();
 
-          // One Sale creates one row per BOM component. Count drone qty once.
-          previous.quantity = Math.max(
-            previous.quantity,
-            quantity,
-          );
-          previous.status =
-            approvalStatus || previous.status;
+        const instanceCode = String(
+          instance?.instance_code ||
+            instance?.instanceCode ||
+            `${mrNumber}${suffix}`,
+        ).trim();
 
-          salesBatchByKey.set(batchKey, previous);
-        });
+        return {
+          ...(parentRequest || {}),
+          material_request_id: mrNumber,
+          request_id: mrNumber,
+
+          _is_physical_drone_instance: true,
+          _drone_instance_id:
+            instance?.id ??
+            instance?.pk ??
+            "",
+          _drone_instance_code: instanceCode,
+          _drone_instance_suffix: suffix,
+          _drone_instance_display:
+            `${mrNumber} / ${suffix}`,
+
+          // One DroneInstance is exactly one physical drone.
+          _in_drone_total_quantity: 1,
+          _in_drone_sold_quantity: 0,
+          _in_drone_sales_reserved_quantity: 0,
+          _in_drone_returnable_quantity: 0,
+          _in_drone_available_quantity: 1,
+          _in_drone_usage_summary: {},
+          _in_drone_is_sold: false,
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => {
+        const leftLabel = String(
+          left?._drone_instance_display || "",
+        );
+        const rightLabel = String(
+          right?._drone_instance_display || "",
+        );
+
+        return leftLabel.localeCompare(
+          rightLabel,
+          undefined,
+          {
+            numeric: true,
+            sensitivity: "base",
+          },
+        );
       });
 
-    const reservedSalesQtyByReference = new Map();
-    const approvedSalesQtyByReference = new Map();
-
-    Array.from(salesBatchByKey.values()).forEach((batch) => {
-      const rejected = [
-        "MANAGEMENT_REJECTED",
-        "REJECTED",
-        "FINANCE_REJECTED",
-      ].includes(batch.status);
-
-      if (rejected) return;
-
-      reservedSalesQtyByReference.set(
-        batch.reference,
-        Number(
-          reservedSalesQtyByReference.get(batch.reference) || 0,
-        ) + Number(batch.quantity || 0),
-      );
-
-      if (
-        [
-          "APPROVED",
-          "MANAGEMENT_APPROVED",
-          "SOLD",
-        ].includes(batch.status)
-      ) {
-        approvedSalesQtyByReference.set(
-          batch.reference,
-          Number(
-            approvedSalesQtyByReference.get(batch.reference) || 0,
-          ) + Number(batch.quantity || 0),
-        );
-      }
-    });
-
-    /*
-     * Existing drone choices for Returnable -> Flight Test / Demo-Trials / Event.
-     * These are already-issued MRs, so selecting one must reuse the SAME MR number.
-     *
-     * RETAIL_SALES and RETURNABLE component MRs are intentionally excluded:
-     * this dropdown represents an existing drone, not a component-only request.
-     *
-     * Sold MRs are intentionally kept in the dropdown so the user can see the
-     * historical MR, but they are marked SOLD and cannot be submitted again.
-     */
     setInDroneRequests(
-      requestList
-        .filter((request) => {
-          const status = String(
-            request?.status ||
-              request?.approval_status ||
-              "",
-          )
-            .trim()
-            .toUpperCase();
-
-          const requestType = String(
-            request?.request_type ||
-              request?.requestType ||
-              "",
-          )
-            .trim()
-            .toUpperCase();
-
-          const mrNumber = String(
-            request?.material_request_id ||
-              request?.request_id ||
-              request?.mr_id ||
-              "",
-          ).trim();
-
-          return (
-            Boolean(mrNumber) &&
-            IN_DRONE_MR_STATUSES.has(status) &&
-            !["RETURNABLE", "RETAIL_SALES"].includes(requestType)
-          );
-        })
-        .map((request) => {
-          const references = [
-            request?.id,
-            request?.pk,
-            request?.material_request_id,
-            request?.request_id,
-            request?.mr_id,
-          ]
-            .filter(
-              (value) =>
-                value !== undefined &&
-                value !== null &&
-                String(value).trim() !== "",
-            )
-            .map((value) =>
-              String(value).trim().toUpperCase(),
-            );
-
-          const soldQuantity = Math.max(
-            ...[
-              0,
-              ...references.map(
-                (reference) =>
-                  Number(
-                    approvedSalesQtyByReference.get(
-                      reference,
-                    ) || 0,
-                  ),
-              ),
-            ],
-          );
-
-          const reservedSalesQuantity = Math.max(
-            ...[
-              0,
-              ...references.map(
-                (reference) =>
-                  Number(
-                    reservedSalesQtyByReference.get(
-                      reference,
-                    ) || 0,
-                  ),
-              ),
-            ],
-          );
-
-          const droneQuantity = Math.max(
-            Number(
-              request?.required_quantity ??
-                request?.drone_quantity ??
-                request?.drone_qty ??
-                request?.quantity ??
-                0,
-            ) || 0,
-            0,
-          );
-
-          const matchingUsageRows =
-            componentUsageRows.filter((usage) => {
-              const usageReferences = [
-                usage?.material_request,
-                usage?.material_request_id,
-                usage?.material_request_number,
-                usage?.request_id,
-                usage?.mr_id,
-              ]
-                .filter(
-                  (value) =>
-                    value !== undefined &&
-                    value !== null &&
-                    String(value).trim() !== "",
-                )
-                .map((value) =>
-                  String(value).trim().toUpperCase(),
-                );
-
-              return usageReferences.some((reference) =>
-                references.includes(reference),
-              );
-            });
-
-          const movementGroups = new Map();
-
-          matchingUsageRows.forEach((usage) => {
-            const purpose = String(
-              usage?.purpose || usage?.usage_purpose || "",
-            )
-              .trim()
-              .toUpperCase();
-
-            if (
-              ![
-                "FLIGHT_TEST",
-                "CUSTOMER_DEMO",
-                "EVENT",
-              ].includes(purpose)
-            ) {
-              return;
-            }
-
-            const rawDetails = usage?.inventory_issue_details;
-            const details = Array.isArray(rawDetails)
-              ? rawDetails
-              : rawDetails && typeof rawDetails === "object"
-                ? [rawDetails]
-                : [];
-
-            const movementId = String(
-              details.find(
-                (detail) =>
-                  detail &&
-                  typeof detail === "object" &&
-                  detail.movement_id,
-              )?.movement_id ||
-                usage?.movement_id ||
-                [
-                  purpose,
-                  usage?.requested_date || "",
-                  usage?.return_due_date || "",
-                  usage?.remarks || "",
-                ].join("|"),
-            );
-
-            const groupKey = `${purpose}|${movementId}`;
-            const group = movementGroups.get(groupKey) || {
-              purpose,
-              quantity: 0,
-              rows: [],
-            };
-
-            group.quantity = Math.max(
-              group.quantity,
-              Math.max(
-                Number(
-                  usage?.quantity ??
-                    usage?.issued_quantity ??
-                    usage?.requested_quantity ??
-                    usage?.qty ??
-                    0,
-                ) || 0,
-                0,
-              ),
-            );
-            group.rows.push(usage);
-            movementGroups.set(groupKey, group);
-          });
-
-          const usageSummary = {};
-          let activeReturnableQuantity = 0;
-
-          Array.from(movementGroups.values()).forEach((group) => {
-            const allRejected = group.rows.every(
-              (usage) =>
-                String(usage?.return_approval_status || "")
-                  .trim()
-                  .toUpperCase() === "REJECTED",
-            );
-
-            if (allRejected) return;
-
-            const fullyReleased = group.rows.every((usage) => {
-              const condition = String(
-                usage?.return_condition || "",
-              )
-                .trim()
-                .toUpperCase();
-              const approval = String(
-                usage?.return_approval_status || "",
-              )
-                .trim()
-                .toUpperCase();
-
-              return condition === "OK" && approval === "COMPLETED";
-            });
-
-            if (fullyReleased) return;
-
-            activeReturnableQuantity += group.quantity;
-            usageSummary[group.purpose] =
-              Number(usageSummary[group.purpose] || 0) +
-              group.quantity;
-          });
-
-          const availableQuantity = Math.max(
-            droneQuantity -
-              reservedSalesQuantity -
-              activeReturnableQuantity,
-            0,
-          );
-
-          return {
-            ...request,
-            _in_drone_total_quantity: droneQuantity,
-            _in_drone_sold_quantity: soldQuantity,
-            _in_drone_sales_reserved_quantity:
-              reservedSalesQuantity,
-            _in_drone_returnable_quantity:
-              activeReturnableQuantity,
-            _in_drone_available_quantity:
-              availableQuantity,
-            _in_drone_usage_summary: usageSummary,
-            _in_drone_is_sold:
-              droneQuantity > 0 && soldQuantity >= droneQuantity,
-          };
-        }),
+      availablePhysicalDrones,
     );
 
     /*
@@ -1803,19 +1717,69 @@ async function saveComponent() {
     return;
   }
 
+  const category = String(
+    componentForm.category || ""
+  )
+    .trim()
+    .toUpperCase();
+
+  const componentType = String(
+    componentForm.component_type || ""
+  ).trim();
+
+  const specifications = String(
+    componentForm.specifications || ""
+  ).trim();
+
+  if (!category) {
+    alert("Category is required.");
+    return;
+  }
+
+  if (!componentType) {
+    alert("Component Type is required.");
+    return;
+  }
+
+  const hsnNumber = String(
+    componentForm.hsn_no || ""
+  ).trim();
+
+  if (
+    hsnNumber &&
+    !/^\d{4,8}$/.test(hsnNumber)
+  ) {
+    alert(
+      "HSN.No must contain 4 to 8 digits, or leave it blank."
+    );
+    return;
+  }
+
   const payload = {
-    component_id: componentForm.component_id,
-    category: componentForm.category,
-    component_type: String(
-      componentForm.component_type || ""
+    /*
+     * The New MR popup intentionally has no separate Component Name field.
+     * Keep API compatibility by deriving the backend name from the visible
+     * Component Type / Specification values.
+     */
+    name: componentType || specifications,
+    version: String(
+      componentForm.version || ""
     ).trim(),
-    specifications: componentForm.specifications,
-    unit_of_measurements: componentForm.unit_of_measurements,
-    hsn_numbers: componentForm.hsn_no,
-    sku_numbers: componentForm.sku_no,
-    part_numbers: componentForm.part_no,
-    product_link: componentForm.product_link,
-    tally_reference: componentForm.tally_reference,
+    category,
+    component_type: componentType,
+    specifications,
+    sku_numbers: String(
+      componentForm.sku_no || ""
+    ).trim(),
+    part_numbers: String(
+      componentForm.part_no || ""
+    ).trim(),
+    tally_reference: String(
+      componentForm.tally_reference || ""
+    ).trim(),
+    product_link: String(
+      componentForm.product_link || ""
+    ).trim(),
     ordering_id: null,
     unit_price: 0,
     stock_quantity: 0,
@@ -1823,50 +1787,61 @@ async function saveComponent() {
     is_active: true,
   };
 
+  if (hsnNumber) {
+    payload.hsn_numbers = hsnNumber;
+  }
+
   try {
-    const res = await fetch(`${config.baseURL}/components/components/`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
+    const newComponent =
+      await fetchAuthenticatedJson(
+        `${config.baseURL}/components/components/`,
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
+      );
 
-    if (!res.ok) {
-      const err = await res.json();
-      console.log(err);
-      alert("Unable to save component");
-      return;
-    }
+    /*
+     * Refresh Component Master first so the newly-created component becomes
+     * immediately selectable in Customized BOM / R&D / Returnable.
+     */
+    await loadComponents();
 
-    const newComponent = await res.json();
+    alert(
+      `Component ${
+        newComponent?.component_id ||
+        componentForm.component_id ||
+        componentType
+      } added successfully.`
+    );
 
-    alert("Component Added Successfully");
-await loadComponents();
     setShowComponentModal(false);
 
-    // reset form
     setComponentForm({
-      component_id: getNextComponentId([...componentsList, newComponent]),
-      category: CATEGORY_CHOICES[0],
+      component_id: "",
+          category: CATEGORY_CHOICES[0],
       component_type: "",
       specifications: "",
       hsn_no: "",
       sku_no: "",
       part_no: "",
       tally_reference: "",
-      unit_of_measurements: "",
       product_link: "",
     });
+  } catch (error) {
+    console.error(
+      "Failed to create Component Master row:",
+      error,
+    );
 
-    // optional:
-    // reload components here if your dropdown uses components
-
-  } catch (err) {
-    console.error(err);
-    alert("Server error");
+    alert(
+      error?.message ||
+      error?.detail ||
+      "Unable to add component. Check the entered Component Master fields."
+    );
   }
 }
+
 async function addRow() {
   if (!canManageMR) {
     return;
@@ -2012,22 +1987,65 @@ useEffect(() => {
 useEffect(() => {
   async function fetchBoms() {
     try {
-      const res = await fetch(`${config.baseURL}/bom/bom/`);
-      if (!res.ok) throw new Error("Failed to fetch BOMs");
-      const data = await res.json();
+      const data = await fetchAuthenticatedJson(
+        `${config.baseURL}/bom/bom/`,
+        {
+          cache: "no-store",
+        },
+      );
 
-      const bomListData = Array.isArray(data) ? data : data.results;
+      const bomListData = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.results)
+          ? data.results
+          : [];
 
-      setBomList(bomListData);
+      /*
+       * New Material Request -> Select BOM
+       *
+       * ONLY a BOM that has completed Manager approval can be selected.
+       *
+       * Excluded:
+       *   PENDING_MANAGER
+       *   MANAGER_REJECTED / Sent for Modification
+       *   MODIFIED
+       *   any other non-approved state
+       *
+       * A rejected/modified BOM will become selectable automatically only
+       * after Manager approves it again and its backend status is APPROVED.
+       */
+      const approvedBomList =
+        bomListData.filter(
+          (bom) =>
+            String(bom?.status || "")
+              .trim()
+              .toUpperCase() === "APPROVED",
+        );
 
-      const options = bomListData.map((bom) => ({
-        value: bom.id,
-        label: `${bom.product_name} - ${bom.bom_name}`,
-      }));
+      // Keep the same approved-only source for both the dropdown and the
+      // subsequent full BOM lookup when the user selects an option.
+      setBomList(approvedBomList);
+
+      const options =
+        approvedBomList.map((bom) => ({
+          value: bom.id,
+          label: `${
+            bom.product_name || "-"
+          } - ${
+            bom.bom_name ||
+            bom.bom_number ||
+            "BOM"
+          }`,
+        }));
 
       setBomOptions(options);
     } catch (err) {
-      console.error("Error fetching BOMs:", err);
+      console.error(
+        "Error fetching approved BOMs:",
+        err,
+      );
+      setBomList([]);
+      setBomOptions([]);
     }
   }
 
@@ -2128,9 +2146,27 @@ const applyDroneQuantityToBomRows = (
 
 const updateBomRow = (i, patch) =>
   setRows((prev) =>
-    prev.map((row, idx) =>
-      idx === i ? { ...row, ...patch } : row
-    )
+    prev.map((row, idx) => {
+      if (idx !== i) {
+        return row;
+      }
+
+      const nextRow = {
+        ...row,
+        ...patch,
+      };
+
+      /*
+       * Only Customized BOM changes are audit-highlighted.
+       * Programmatic quantity multiplication does not call this helper, so
+       * changing Drone Quantity alone does not falsely mark every BOM row.
+       */
+      if (customizedBom && !row._is_new) {
+        nextRow._is_edited = true;
+      }
+
+      return nextRow;
+    })
   );
 
 
@@ -2272,6 +2308,11 @@ const mapBomRows = (bomData) =>
       price,
       tax,
       total,
+
+      // Customized-BOM audit UI state.
+      _is_new: false,
+      _is_edited: false,
+      _is_deleted: false,
     };
   });
 
@@ -2402,8 +2443,7 @@ const addBomRow = () => {
     {
       component: "",
       component_code: "",
-      component_name: "",
-      category: "",
+          category: "",
       component_type: "",
       specifications: "",
       quantity: 1,
@@ -2413,13 +2453,42 @@ const addBomRow = () => {
       tax: 0,
       total: 0,
       remarks: "",
+      _is_new: true,
+      _is_edited: false,
+      _is_deleted: false,
     },
   ]);
 };
 
+/*
+ * Customized BOM deletion is a SOFT DELETE in the editor.
+ * Keep the original row visible in red for review/audit. It is excluded from
+ * the final BOM item payload after the mandatory deletion reason is supplied.
+ */
 const deleteBomRow = (i) =>
   setRows((prev) =>
-    prev.filter((_, idx) => idx !== i)
+    prev.map((row, idx) =>
+      idx === i
+        ? {
+            ...row,
+            _is_deleted: true,
+            _is_edited: false,
+          }
+        : row,
+    ),
+  );
+
+const restoreBomRow = (i) =>
+  setRows((prev) =>
+    prev.map((row, idx) =>
+      idx === i
+        ? {
+            ...row,
+            _is_deleted: false,
+            _is_edited: true,
+          }
+        : row,
+    ),
   );
 
 const updateRdRow = (i, patch) =>
@@ -2504,7 +2573,7 @@ async function saveBom() {
 
   const payload = {
     ...selectedBom,
-    items: rows.map(buildBomItemPayload),
+    items: rows.filter((row) => !row?._is_deleted).map(buildBomItemPayload),
   };
 
   const res = await fetch(
@@ -2574,9 +2643,27 @@ async function handleSubmit(e) {
 
   if (!form.required_date) {
     newErrors.required_date =
-      requestType === "RETURNABLE"
-        ? "Please enter the returnable date."
-        : "Please enter required date.";
+      "Please enter the Required Date.";
+  }
+
+  /*
+   * GLOBAL 4:00 PM Required Date rule.
+   * Re-check at submit time because a user may have selected today's date
+   * before 4 PM and kept the form open until after 4 PM.
+   */
+  const currentCutoffTime = new Date();
+  const currentToday =
+    getLocalIsoDate(currentCutoffTime);
+
+  if (
+    form.required_date &&
+    isAtOrAfterRequiredDateCutoff(
+      currentCutoffTime,
+    ) &&
+    form.required_date === currentToday
+  ) {
+    newErrors.required_date =
+      "Today's Required Date cannot be submitted at or after 4:00 PM. Please select tomorrow or a later date.";
   }
 
   if (requestType === "RETURNABLE") {
@@ -2631,15 +2718,30 @@ async function handleSubmit(e) {
       form.required_date < form.date
     ) {
       newErrors.required_date =
-        "Returnable date cannot be before the request date.";
+        "Required Date cannot be before the request date.";
+    }
+
+
+    if (!form.returnable_date) {
+      newErrors.returnable_date =
+        "Please enter the Returnable Date.";
+    }
+
+    if (
+      form.returnable_date &&
+      form.required_date &&
+      form.returnable_date < form.required_date
+    ) {
+      newErrors.returnable_date =
+        "Returnable Date cannot be before the Required Date.";
     }
 
     if (
       returnableMaxDate &&
-      form.required_date &&
-      form.required_date > returnableMaxDate
+      form.returnable_date &&
+      form.returnable_date > returnableMaxDate
     ) {
-      newErrors.required_date =
+      newErrors.returnable_date =
         "This purpose allows a maximum return period of 4 days.";
     }
   }
@@ -2661,15 +2763,54 @@ async function handleSubmit(e) {
       newErrors.rows = "Add at least one BOM item.";
     }
     (rows || []).forEach((row, index) => {
-      if (!row.component_code && !row.component_name) {
-        newErrors[`row_${index}`] =
-          `Select component for row ${index + 1}`;
+      const isDeleted =
+        customizedBom &&
+        row?._is_deleted === true;
+
+      const needsChangeReason =
+        customizedBom &&
+        (
+          row?._is_edited === true ||
+          row?._is_deleted === true
+        );
+
+      /*
+       * Deleted rows remain visible in red but are intentionally excluded
+       * from the submitted component payload. Do not require component/qty
+       * validation for a row that is being deleted.
+       */
+      if (!isDeleted) {
+        if (!row.component_code && !row.component_name) {
+          newErrors[`row_${index}`] =
+            `Select component for row ${index + 1}`;
+        }
+
+        if (!row.quantity || Number(row.quantity) <= 0) {
+          newErrors[`row_qty_${index}`] =
+            `Enter quantity for row ${index + 1}`;
+        }
       }
-      if (!row.quantity || Number(row.quantity) <= 0) {
-        newErrors[`row_qty_${index}`] =
-          `Enter quantity for row ${index + 1}`;
+
+      if (
+        needsChangeReason &&
+        !String(row?.remarks || "").trim()
+      ) {
+        newErrors[`row_remarks_${index}`] =
+          row?._is_deleted
+            ? `Remarks are mandatory for deleted BOM row ${index + 1}.`
+            : `Remarks are mandatory for edited BOM row ${index + 1}.`;
       }
     });
+
+    if (
+      customizedBom &&
+      (rows || []).every(
+        (row) => row?._is_deleted === true,
+      )
+    ) {
+      newErrors.rows =
+        "A Customized BOM must contain at least one active component.";
+    }
   }
 
   if (requestType === "R&D") {
@@ -2702,6 +2843,69 @@ async function handleSubmit(e) {
 
   if (Object.keys(newErrors).length) {
     setErrors(newErrors);
+
+    const nowForCutoff = new Date();
+    const todayForCutoff =
+      getLocalIsoDate(nowForCutoff);
+
+    if (
+      form.required_date ===
+        todayForCutoff &&
+      isAtOrAfterRequiredDateCutoff(
+        nowForCutoff,
+      )
+    ) {
+      const tomorrow =
+        addDaysToIsoDate(
+          todayForCutoff,
+          1,
+        );
+
+      const changeToTomorrow =
+        window.confirm(
+          `${getRequiredDateCutoffMessage(
+            nowForCutoff,
+          )}\n\nDo you want to change the Required Date to tomorrow (${tomorrow}) now?`
+        );
+
+      if (changeToTomorrow) {
+        setForm((previous) => ({
+          ...previous,
+          required_date: tomorrow,
+
+          /*
+           * Returnable Date must never become earlier than Required Date.
+           * Clear it only when the newly-selected Required Date invalidates it.
+           */
+          returnable_date:
+            previous.returnable_date &&
+            previous.returnable_date >=
+              tomorrow
+              ? previous.returnable_date
+              : "",
+        }));
+
+        setErrors((previous) => ({
+          ...previous,
+          required_date: "",
+          returnable_date:
+            previous.returnable_date ||
+            "",
+        }));
+      }
+
+      window.scrollTo({
+        top: 0,
+        behavior: "smooth",
+      });
+
+      /*
+       * Do not auto-submit after changing the date.
+       * The user can review the changed date and click Submit Request again.
+       */
+      return;
+    }
+
     window.scrollTo({ top: 0, behavior: "smooth" });
     return;
   }
@@ -2722,7 +2926,15 @@ async function handleSubmit(e) {
         {
           method: "POST",
           body: JSON.stringify({
-            material_request_id: selectedDroneMrId,
+            material_request_id:
+              selectedDroneMrOption?.mrNumber ||
+              selectedDroneMrId,
+            drone_instance_id:
+              selectedDroneMrOption?.droneInstanceId ||
+              undefined,
+            drone_instance_code:
+              selectedDroneMrOption?.droneInstanceCode ||
+              undefined,
             purpose: returnablePurpose,
             quantity: Number(selectedDroneQuantity),
             return_due_date: form.required_date,
@@ -2742,7 +2954,12 @@ async function handleSubmit(e) {
       navigate("/component-usage", {
         state: {
           openPurpose: returnablePurpose,
-          materialRequestId: selectedDroneMrId,
+          materialRequestId:
+            selectedDroneMrOption?.mrNumber ||
+            selectedDroneMrId,
+          droneInstanceId:
+            selectedDroneMrOption?.droneInstanceId ||
+            "",
           refresh: Date.now(),
         },
       });
@@ -2769,7 +2986,9 @@ async function handleSubmit(e) {
 
   const bomItemsForPayload =
     requestType === "BOM"
-      ? rows.map(buildBomItemPayload)
+      ? rows
+          .filter((row) => !row?._is_deleted)
+          .map(buildBomItemPayload)
       : [];
 
   const rdItemsForPayload =
@@ -2822,6 +3041,13 @@ async function handleSubmit(e) {
     0,
   );
 
+  // Normal BOM (BOM + customized_bom=false) bypasses Manager approval.
+  // Custom BOM, R&D, Returnable and Retail Sales still require Manager approval.
+  const managerApprovalRequired = !(
+    String(requestType || "").trim().toUpperCase() === "BOM" &&
+    customizedBom === false
+  );
+
   const payload = {
     material_request_id: form.material_request_id,
     requester_name: form.requester_name,
@@ -2850,14 +3076,24 @@ async function handleSubmit(e) {
             ) || 1
           : totalGeneralQuantity || 1,
     required_date: form.required_date,
+    ...(requestType === "RETURNABLE"
+      ? {
+          returnable_date:
+            form.returnable_date,
+        }
+      : {}),
     remarks: form.remarks,
 
     bom_items: bomItemsForPayload,
     rd_items: rdItemsForPayload,
     request_items: requestItemsForPayload,
 
-    approval_status: "PENDING_MANAGER",
-    status: "PENDING_MANAGER",
+    approval_status: managerApprovalRequired
+      ? "PENDING_MANAGER"
+      : "PENDING",
+    status: managerApprovalRequired
+      ? "PENDING_MANAGER"
+      : "PENDING",
   };
 
   /*
@@ -2892,8 +3128,9 @@ async function handleSubmit(e) {
     );
 
     /*
-     * Every newly-created MR is already submitted as PENDING_MANAGER.
-     * Therefore a Manager notification must exist immediately.
+     * Manager notification fallback is required only when this MR type
+     * actually uses Manager approval. Normal/non-customized BOM skips it
+     * and is routed directly by the backend to Inventory/Procurement.
      *
      * Previously only the MaterialRequest row was created here. The
      * Material Requests list creates a notification only when its separate
@@ -2923,7 +3160,10 @@ async function handleSubmit(e) {
         ),
     ).trim();
 
-    if (createdRequestDbId !== null) {
+    if (
+      managerApprovalRequired &&
+      createdRequestDbId !== null
+    ) {
       try {
         const notificationPayload =
           await fetchAuthenticatedJson(
@@ -3359,7 +3599,7 @@ async function handleSubmit(e) {
                   name="existing_drone_mr"
                   options={inDroneMrOptions}
                   value={selectedDroneMrOption?.label || ""}
-                  placeholder="Search MR number / project / type..."
+                  placeholder="Search available In-Drone MR / _01..."
                   onChange={(event) => {
                     const rawValue = String(
                       event.target.value || "",
@@ -3375,7 +3615,13 @@ async function handleSubmit(e) {
                     setSelectedDroneMrId(
                       selected?.value || "",
                     );
-                    setSelectedDroneQuantity("");
+
+                    // One dropdown option is one physical DroneInstance.
+                    setSelectedDroneQuantity(
+                      selected?.droneInstanceId
+                        ? "1"
+                        : "",
+                    );
 
                     setErrors((previous) => ({
                       ...previous,
@@ -3386,14 +3632,15 @@ async function handleSubmit(e) {
 
                 {inDroneMrOptions.length === 0 && (
                   <p className="mt-1 text-xs text-amber-600">
-                    No currently issued In-Drone MR is available.
+                    No AVAILABLE physical drone is currently present in In Drone.
                   </p>
                 )}
 
                 {selectedDroneMrOption && (
                   <div className="mt-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
                     <span className="font-semibold text-foreground">
-                      {selectedDroneMrOption.value}
+                      {selectedDroneMrOption.displayMrNumber ||
+                        selectedDroneMrOption.mrNumber}
                     </span>
                     {" · "}
                     Project: {selectedDroneMrOption.project}
@@ -3429,7 +3676,10 @@ async function handleSubmit(e) {
                   }
                   step="1"
                   value={selectedDroneQuantity}
-                  disabled={selectedDroneMrAvailableQuantity <= 0}
+                  disabled={
+                    selectedDroneMrAvailableQuantity <= 0 ||
+                    Boolean(selectedDroneMrOption?.droneInstanceId)
+                  }
                   placeholder={
                     selectedDroneMrAvailableQuantity > 0
                       ? `Select 1 to ${selectedDroneMrAvailableQuantity}`
@@ -3559,6 +3809,7 @@ async function handleSubmit(e) {
 
                     setSelectedBom(fullBom);
                     setCustomizedBom(false);
+                    setExpandedBomCategories([]);
                     /*
                      * A newly-selected BOM always starts with ONE drone.
                      * The BOM row Qty therefore initially stays equal to
@@ -3690,34 +3941,153 @@ async function handleSubmit(e) {
             </>
           )}
 
-          <Field
-            label={requestType === "RETURNABLE" ? "Returnable Date" : "Required Date"}
-            required
-          >
+          <Field label="Required Date" required>
             <Input
               type="date"
               name="required_date"
-              min={requestType === "RETURNABLE" ? form.date : undefined}
-              max={returnableMaxDate || undefined}
+              min={form.date || undefined}
               value={form.required_date}
-              onChange={handleChange}
+              onChange={(event) => {
+                const selectedDate =
+                  event.target.value;
+
+                if (
+                  selectedDate ===
+                    getLocalIsoDate() &&
+                  isAtOrAfterRequiredDateCutoff()
+                ) {
+                  const tomorrow =
+                    addDaysToIsoDate(
+                      getLocalIsoDate(),
+                      1,
+                    );
+
+                  const changeToTomorrow =
+                    window.confirm(
+                      `${getRequiredDateCutoffMessage()}\n\nDo you want to change the Required Date to tomorrow (${tomorrow}) now?`
+                    );
+
+                  setForm((previous) => ({
+                    ...previous,
+                    required_date:
+                      changeToTomorrow
+                        ? tomorrow
+                        : "",
+                    /*
+                     * A previously-selected return date may become invalid
+                     * when Required Date changes.
+                     */
+                    returnable_date:
+                      previous.returnable_date &&
+                      changeToTomorrow &&
+                      previous.returnable_date >=
+                        tomorrow
+                        ? previous.returnable_date
+                        : "",
+                  }));
+
+                  setErrors((previous) => ({
+                    ...previous,
+                    required_date:
+                      changeToTomorrow
+                        ? ""
+                        : "Please select tomorrow or a later date.",
+                    returnable_date: "",
+                  }));
+
+                  return;
+                }
+
+                setForm((previous) => ({
+                  ...previous,
+                  required_date:
+                    selectedDate,
+                  returnable_date:
+                    previous.returnable_date &&
+                    previous.returnable_date >=
+                      selectedDate
+                      ? previous.returnable_date
+                      : "",
+                }));
+
+                setErrors((previous) => ({
+                  ...previous,
+                  required_date: "",
+                  returnable_date: "",
+                }));
+              }}
             />
-            {requestType === "RETURNABLE" && returnableMaxDate && (
-              <p className="mt-1 text-xs text-muted-foreground">
-                Maximum 4 days for this purpose. Latest date: {returnableMaxDate}
+
+            {isAtOrAfterRequiredDateCutoff() && (
+              <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">
+                It is 4:00 PM or later. Today's date cannot be used as the Required Date. Please select tomorrow ({getMinimumRequiredDateForCurrentTime()}) or a later date.
               </p>
             )}
-            {requestType === "RETURNABLE" && !returnableMaxDate && returnablePurpose && (
-              <p className="mt-1 text-xs text-muted-foreground">
-                Demo/Trials and Event have no 4-day maximum. Flight Test, QC Check, and Miscellaneous Usage allow a maximum of 4 days.
-              </p>
-            )}
+
             {errors.required_date && (
               <p className="mt-1 text-sm text-red-600">
                 {errors.required_date}
               </p>
             )}
           </Field>
+
+          {requestType === "RETURNABLE" && (
+            <Field label="Returnable Date" required>
+              <Input
+                type="date"
+                name="returnable_date"
+                min={
+                  form.required_date ||
+                  form.date
+                }
+                max={
+                  returnableMaxDate ||
+                  undefined
+                }
+                value={
+                  form.returnable_date
+                }
+                onChange={(event) => {
+                  const selectedDate =
+                    event.target.value;
+
+                  setForm((previous) => ({
+                    ...previous,
+                    returnable_date:
+                      selectedDate,
+                  }));
+
+                  if (
+                    errors.returnable_date
+                  ) {
+                    setErrors((previous) => ({
+                      ...previous,
+                      returnable_date: "",
+                    }));
+                  }
+                }}
+              />
+
+              {returnableMaxDate && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Maximum 4 days for this purpose. Latest date: {returnableMaxDate}
+                </p>
+              )}
+
+              {!returnableMaxDate &&
+                returnablePurpose && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Demo/Trials and Event have no 4-day maximum. Flight Test, QC Check, and Miscellaneous Usage allow a maximum of 4 days.
+                  </p>
+                )}
+
+              {errors.returnable_date && (
+                <p className="mt-1 text-sm text-red-600">
+                  {errors.returnable_date}
+                </p>
+              )}
+            </Field>
+          )}
         </FormGrid>
 
         <Field label="Remarks" required={requestType === "RETURNABLE"}>
@@ -3771,7 +4141,7 @@ async function handleSubmit(e) {
     onClick={openAddComponentModal}
     className="inline-flex items-center rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white"
   >
-    + Add Component
+    New Components
   </button>
 
   <button
@@ -3935,7 +4305,7 @@ async function handleSubmit(e) {
                 onClick={openAddComponentModal}
                 className="inline-flex items-center rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white"
               >
-                + Add Component
+                New Components
               </button>
               <button
                 type="button"
@@ -4080,13 +4450,29 @@ async function handleSubmit(e) {
       </h3>
 
       {customizedBom && (
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={expandAllBomCategories}
+            className="inline-flex items-center rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium hover:bg-muted"
+          >
+            Expand All
+          </button>
+
+          <button
+            type="button"
+            onClick={collapseAllBomCategories}
+            className="inline-flex items-center rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium hover:bg-muted"
+          >
+            Collapse All
+          </button>
+
           <button
             type="button"
             onClick={openAddComponentModal}
             className="inline-flex items-center rounded-lg bg-primary px-3 py-2 text-white"
           >
-            + Add Component
+            New Components
           </button>
 
           <button
@@ -4113,225 +4499,502 @@ async function handleSubmit(e) {
             <th className="px-3 py-2">Qty</th>
             <th className="px-3 py-2">UOM</th>
             <th className="px-3 py-2">Inventory Qty</th>
+            {customizedBom && (
+              <th className="min-w-[240px] px-3 py-2">
+                Remarks / Change Reason
+              </th>
+            )}
             {customizedBom && <th className="px-3 py-2">Action</th>}
           </tr>
         </thead>
 
         <tbody>
-          {rows.map((row, i) => {
-            const rowComponentLabel =
-              componentOptions.find(
-                (opt) =>
-                  String(opt.value) === String(row.component) ||
-                  String(opt.value) === String(row.component_code) ||
-                  String(opt.component_code) === String(row.component_code) ||
-                    String(opt.component_code) === String(row.component)
-                  )?.label || row.component_code || row.component || row.specifications || row.category || "";
+          {(() => {
+            const groupedRows = new Map();
 
-            return (
-              <tr key={i} className="border-b">
-                <td className="px-3 py-2">
-                  {customizedBom ? (
-                    <SearchableSelect
-                      name={`bom-specification-${i}`}
-                      value={row.specifications || row.specification || ""}
-                      options={specificationOptions}
-                      placeholder="Search specification..."
-                      onChange={(event) => {
-                        const selected = specificationOptions.find((option) => option.label === event.target.value);
-                        if (selected) {
-                          updateBomRow(i, computeBomRow({
-                            ...row,
-                            component: selected.componentValue,
-                            component_code: selected.componentCode,
-                            category: selected.category || "",
-                            component_type: selected.component_type || "",
-                            specifications: selected.specifications,
-                            hsn_no: selected.hsnNo || "",
-                          }));
-                        }
-                      }}
-                    />
-                  ) : (
-                    <Input value={row.specifications || row.specification || ""} readOnly />
-                  )}
-                </td>
-                <td className="px-3 py-2">
-                  {customizedBom ? (
-<SearchableSelect
-  name={`component-${i}`}
-  value={row.component_code || row.component || ""}
-  options={componentOptions}
-  placeholder="Search component..."
-  onChange={(e) => {
-    const text = e.target.value;
+            (rows || []).forEach((row, index) => {
+              const category =
+                normalizeBomCategory(
+                  row?.category,
+                );
 
-    // allow typing
-    updateBomRow(i, {
-      ...row,
-      component_code: text,
-    });
+              if (!groupedRows.has(category)) {
+                groupedRows.set(category, []);
+              }
 
-    // if an option is selected from datalist
-    const selected = componentOptions.find(
-      (opt) => opt.label === text
-    );
+              groupedRows.get(category).push({
+                row,
+                index,
+              });
+            });
 
-    if (selected) {
-      updateBomRow(
-        i,
-        computeBomRow({
-          ...row,
-          component: selected.value,
-          component_code: selected.component_code,
-          category: selected.category,
-          component_type: selected.component_type || "",
-          specifications: selected.specifications,
-          hsn_no: selected.hsnNo || "",
-          unit: row.unit || "",
-          unit_price: Number(selected.unit_price || 0),
-        })
-      );
-    }
-  }}
-/>
-                  ) : (
-                    <Input value={rowComponentLabel} readOnly />
-                  )}
-                  {errors[`row_${i}`] && (
-                    <div className="mt-1 text-xs text-red-600">{errors[`row_${i}`]}</div>
-                  )}
-                </td>
+            return Array.from(
+              groupedRows.entries(),
+            ).map(([category, categoryRows]) => {
+              const isExpanded =
+                expandedBomCategories.includes(
+                  category,
+                );
 
-                <td className="px-3 py-2 text-center">
-                  {componentOptions.find((option) => String(option.value) === String(row.component))?.hsnNo || "-"}
-                </td>
+              const editedCount =
+                categoryRows.filter(
+                  ({ row }) =>
+                    row?._is_edited === true &&
+                    row?._is_deleted !== true,
+                ).length;
 
-                <td className="px-3 py-2">
-                  <Input value={row.category || ""} readOnly />
-                </td>
+              const deletedCount =
+                categoryRows.filter(
+                  ({ row }) =>
+                    row?._is_deleted === true,
+                ).length;
 
-                <td className="px-3 py-2">
-                  <Input value={row.component_type || ""} readOnly />
-                </td>
-
-                <td className="px-3 py-2">
-                  {customizedBom ? (
-                    <div className="space-y-1">
-                      <Input
-                        type="number"
-                        min="0"
-                        step="1"
-                        value={
-                          row.quantity ??
-                          (
-                            Number(
-                              row.base_quantity ??
-                                row.baseQuantity ??
-                                0
-                            ) *
-                            getDroneQuantityMultiplier()
+              return (
+                <Fragment
+                  key={`category-${category}`}
+                >
+                  <tr
+                    className="border-b border-border bg-muted/70"
+                  >
+                    <td
+                      colSpan={
+                        customizedBom ? 10 : 8
+                      }
+                      className="p-0"
+                    >
+                      <button
+                        type="button"
+                        onClick={() =>
+                          toggleBomCategory(
+                            category,
                           )
                         }
-                        onChange={(e) => {
-                          /*
-                           * In Customized BOM mode the Qty shown here is the
-                           * FINAL required component quantity for this MR.
-                           *
-                           * Example:
-                           *   component per drone = 1
-                           *   Drone Qty            = 2
-                           *   displayed Qty        = 2
-                           *
-                           * If the engineer manually changes the customized
-                           * total, retain the equivalent per-drone base qty so
-                           * a later Drone Qty change can multiply it again.
-                           */
-                          const totalQuantity =
-                            Math.max(
-                              Number(
-                                e.target.value
-                              ) || 0,
-                              0,
-                            );
+                        className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left transition hover:bg-muted"
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="text-base font-bold">
+                            {isExpanded
+                              ? "▼"
+                              : "▶"}
+                          </span>
 
-                          const droneMultiplier =
-                            getDroneQuantityMultiplier();
+                          <span className="font-semibold">
+                            {category}
+                          </span>
 
-                          const baseQuantity =
-                            droneMultiplier > 0
-                              ? (
-                                  totalQuantity /
-                                  droneMultiplier
-                                )
-                              : totalQuantity;
+                          <span className="rounded-full border border-border bg-background px-2 py-0.5 text-xs text-muted-foreground">
+                            {categoryRows.length} item
+                            {categoryRows.length === 1
+                              ? ""
+                              : "s"}
+                          </span>
+                        </div>
 
-                          updateBomRow(
-                            i,
-                            computeBomRow({
-                              ...row,
-                              base_quantity:
-                                baseQuantity,
-                              quantity:
-                                totalQuantity,
-                            })
-                          );
-                        }}
-                      />
+                        {customizedBom && (
+                          <div className="flex items-center gap-2 text-xs">
+                            {editedCount > 0 && (
+                              <span className="rounded-full border border-amber-300 bg-amber-100 px-2 py-1 font-semibold text-amber-800 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
+                                {editedCount} edited
+                              </span>
+                            )}
 
-                      <div className="text-center text-[10px] text-muted-foreground">
-                        {Number(
-                          row.base_quantity ??
-                            row.baseQuantity ??
-                            0
-                        ) || 0}
-                        {" × "}
-                        {getDroneQuantityMultiplier()}
-                        {" drone(s)"}
-                      </div>
-                    </div>
-                  ) : (
-                    <Input
-                      value={row.quantity}
-                      readOnly
-                    />
-                  )}
-                </td>
+                            {deletedCount > 0 && (
+                              <span className="rounded-full border border-red-300 bg-red-100 px-2 py-1 font-semibold text-red-700 dark:border-red-800 dark:bg-red-950/50 dark:text-red-300">
+                                {deletedCount} deleted
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </button>
+                    </td>
+                  </tr>
 
-                <td className="px-3 py-2">
-                  <Input
-                    value={row.unit || ""}
-                    placeholder="e.g. NOS, MTR, KG"
-                    readOnly={!customizedBom}
-                    onChange={(event) => {
-                      if (!customizedBom) return;
+                  {isExpanded &&
+                    categoryRows.map(
+                      ({ row, index: i }) => {
+                        const rowComponentLabel =
+                          componentOptions.find(
+                            (opt) =>
+                              String(opt.value) === String(row.component) ||
+                              String(opt.value) === String(row.component_code) ||
+                              String(opt.component_code) === String(row.component_code) ||
+                              String(opt.component_code) === String(row.component)
+                          )?.label ||
+                          row.component_code ||
+                          row.component ||
+                          row.specifications ||
+                          row.category ||
+                          "";
 
-                      updateBomRow(i, {
-                        ...row,
-                        unit: event.target.value,
-                      });
-                    }}
-                  />
-                </td>
+                        const isDeleted =
+                          customizedBom &&
+                          row?._is_deleted === true;
 
-                <td className="px-3 py-2 text-center">
-                  {getInventoryQuantityForBomRow(row)}
-                </td>
+                        const isEdited =
+                          customizedBom &&
+                          row?._is_edited === true &&
+                          !isDeleted;
 
-                {customizedBom && (
-                  <td className="px-3 py-2 text-center">
-                    <button
-                      type="button"
-                      onClick={() => deleteBomRow(i)}
-                      className="text-red-500"
-                    >
-                      Delete
-                    </button>
-                  </td>
-                )}
-              </tr>
-            );
-          })}
+                        const isNew =
+                          customizedBom &&
+                          row?._is_new === true &&
+                          !isDeleted;
+
+                        const rowClassName =
+                          isDeleted
+                            ? "border-b border-red-300 bg-red-100/90 dark:border-red-900 dark:bg-red-950/40"
+                            : isEdited
+                              ? "border-b border-amber-300 bg-amber-100/80 dark:border-amber-900 dark:bg-amber-950/30"
+                              : isNew
+                                ? "border-b border-sky-300 bg-sky-50 dark:border-sky-900 dark:bg-sky-950/20"
+                                : "border-b";
+
+                        return (
+                          <tr
+                            key={`bom-row-${i}`}
+                            className={rowClassName}
+                          >
+                            <td className="px-3 py-2">
+                              {customizedBom ? (
+                                <SearchableSelect
+                                  name={`bom-specification-${i}`}
+                                  value={row.specifications || row.specification || ""}
+                                  options={specificationOptions}
+                                  placeholder="Search specification..."
+                                  disabled={isDeleted}
+                                  onChange={(event) => {
+                                    const selected =
+                                      specificationOptions.find(
+                                        (option) =>
+                                          option.label ===
+                                          event.target.value,
+                                      );
+
+                                    if (selected) {
+                                      updateBomRow(
+                                        i,
+                                        computeBomRow({
+                                          ...row,
+                                          component:
+                                            selected.componentValue,
+                                          component_code:
+                                            selected.componentCode,
+                                          category:
+                                            selected.category || "",
+                                          component_type:
+                                            selected.component_type || "",
+                                          specifications:
+                                            selected.specifications,
+                                          hsn_no:
+                                            selected.hsnNo || "",
+                                        }),
+                                      );
+                                    }
+                                  }}
+                                />
+                              ) : (
+                                <Input
+                                  value={row.specifications || row.specification || ""}
+                                  readOnly
+                                />
+                              )}
+                            </td>
+
+                            <td className="px-3 py-2">
+                              {customizedBom ? (
+                                <SearchableSelect
+                                  name={`component-${i}`}
+                                  value={row.component_code || row.component || ""}
+                                  options={componentOptions}
+                                  placeholder="Search component..."
+                                  disabled={isDeleted}
+                                  onChange={(event) => {
+                                    const value =
+                                      event.target.value;
+
+                                    updateBomRow(i, {
+                                      component_code:
+                                        value,
+                                    });
+
+                                    const selected =
+                                      componentOptions.find(
+                                        (option) =>
+                                          option.label ===
+                                          value,
+                                      );
+
+                                    if (selected) {
+                                      updateBomRow(
+                                        i,
+                                        computeBomRow({
+                                          ...row,
+                                          component:
+                                            selected.value,
+                                          component_code:
+                                            selected.component_code,
+                                          category:
+                                            selected.category,
+                                          component_type:
+                                            selected.component_type || "",
+                                          specifications:
+                                            selected.specifications,
+                                          hsn_no:
+                                            selected.hsnNo || "",
+                                          unit:
+                                            row.unit || "",
+                                          unit_price:
+                                            Number(
+                                              selected.unit_price || 0,
+                                            ),
+                                        }),
+                                      );
+                                    }
+                                  }}
+                                />
+                              ) : (
+                                <Input
+                                  value={rowComponentLabel}
+                                  readOnly
+                                />
+                              )}
+
+                              {errors[`row_${i}`] && (
+                                <div className="mt-1 text-xs text-red-600">
+                                  {errors[`row_${i}`]}
+                                </div>
+                              )}
+                            </td>
+
+                            <td className="px-3 py-2 text-center">
+                              {componentOptions.find(
+                                (option) =>
+                                  String(option.value) ===
+                                  String(row.component),
+                              )?.hsnNo || "-"}
+                            </td>
+
+                            <td className="px-3 py-2">
+                              <Input
+                                value={row.category || ""}
+                                readOnly
+                              />
+                            </td>
+
+                            <td className="px-3 py-2">
+                              <Input
+                                value={row.component_type || ""}
+                                readOnly
+                              />
+                            </td>
+
+                            <td className="px-3 py-2">
+                              {customizedBom ? (
+                                <div className="space-y-1">
+                                  <Input
+                                    type="number"
+                                    min="0"
+                                    step="1"
+                                    disabled={isDeleted}
+                                    value={
+                                      row.quantity ??
+                                      (
+                                        Number(
+                                          row.base_quantity ??
+                                            row.baseQuantity ??
+                                            0
+                                        ) *
+                                        getDroneQuantityMultiplier()
+                                      )
+                                    }
+                                    onChange={(event) => {
+                                      const totalQuantity =
+                                        Math.max(
+                                          Number(
+                                            event.target.value,
+                                          ) || 0,
+                                          0,
+                                        );
+
+                                      const droneMultiplier =
+                                        getDroneQuantityMultiplier();
+
+                                      const baseQuantity =
+                                        droneMultiplier > 0
+                                          ? totalQuantity /
+                                            droneMultiplier
+                                          : totalQuantity;
+
+                                      updateBomRow(
+                                        i,
+                                        computeBomRow({
+                                          ...row,
+                                          base_quantity:
+                                            baseQuantity,
+                                          quantity:
+                                            totalQuantity,
+                                        }),
+                                      );
+                                    }}
+                                  />
+
+                                  <div className="text-center text-[10px] text-muted-foreground">
+                                    {Number(
+                                      row.base_quantity ??
+                                        row.baseQuantity ??
+                                        0,
+                                    ) || 0}
+                                    {" × "}
+                                    {getDroneQuantityMultiplier()}
+                                    {" drone(s)"}
+                                  </div>
+
+                                  {errors[`row_qty_${i}`] && (
+                                    <div className="text-xs text-red-600">
+                                      {errors[`row_qty_${i}`]}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <Input
+                                  value={row.quantity}
+                                  readOnly
+                                />
+                              )}
+                            </td>
+
+                            <td className="px-3 py-2">
+                              <Input
+                                value={row.unit || ""}
+                                placeholder="e.g. NOS, MTR, KG"
+                                readOnly={
+                                  !customizedBom ||
+                                  isDeleted
+                                }
+                                onChange={(event) => {
+                                  if (
+                                    !customizedBom ||
+                                    isDeleted
+                                  ) {
+                                    return;
+                                  }
+
+                                  updateBomRow(i, {
+                                    unit:
+                                      event.target.value,
+                                  });
+                                }}
+                              />
+                            </td>
+
+                            <td className="px-3 py-2 text-center">
+                              {getInventoryQuantityForBomRow(
+                                row,
+                              )}
+                            </td>
+
+                            {customizedBom && (
+                              <td className="px-3 py-2">
+                                <Textarea
+                                  value={row.remarks || ""}
+                                  placeholder={
+                                    isDeleted
+                                      ? "Required: reason for deletion"
+                                      : isEdited
+                                        ? "Required: reason for edit"
+                                        : "Remarks"
+                                  }
+                                  onChange={(event) => {
+                                    /*
+                                     * Updating only the explanation must not
+                                     * itself turn an otherwise unchanged row
+                                     * into an edited row.
+                                     */
+                                    setRows(
+                                      (previous) =>
+                                        previous.map(
+                                          (
+                                            currentRow,
+                                            rowIndex,
+                                          ) =>
+                                            rowIndex === i
+                                              ? {
+                                                  ...currentRow,
+                                                  remarks:
+                                                    event.target.value,
+                                                }
+                                              : currentRow,
+                                        ),
+                                    );
+                                  }}
+                                  className={
+                                    errors[
+                                      `row_remarks_${i}`
+                                    ]
+                                      ? "border-red-500"
+                                      : ""
+                                  }
+                                />
+
+                                {errors[
+                                  `row_remarks_${i}`
+                                ] && (
+                                  <div className="mt-1 text-xs font-medium text-red-600">
+                                    {
+                                      errors[
+                                        `row_remarks_${i}`
+                                      ]
+                                    }
+                                  </div>
+                                )}
+
+                                {isEdited && (
+                                  <div className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                                    Edited row — remarks required
+                                  </div>
+                                )}
+
+                                {isDeleted && (
+                                  <div className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-red-700 dark:text-red-300">
+                                    Deleted row — reason required
+                                  </div>
+                                )}
+                              </td>
+                            )}
+
+                            {customizedBom && (
+                              <td className="px-3 py-2 text-center">
+                                {isDeleted ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      restoreBomRow(i)
+                                    }
+                                    className="font-semibold text-blue-600 hover:underline"
+                                  >
+                                    Undo
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      deleteBomRow(i)
+                                    }
+                                    className="font-semibold text-red-500 hover:underline"
+                                  >
+                                    Delete
+                                  </button>
+                                )}
+                              </td>
+                            )}
+                          </tr>
+                        );
+                      },
+                    )}
+                </Fragment>
+              );
+            });
+          })()}
         </tbody>
       </table>
     </div>
@@ -4344,7 +5007,7 @@ async function handleSubmit(e) {
     <div className="w-[700px] rounded-xl border border-border bg-white p-6 shadow-xl max-h-[90vh] overflow-y-auto dark:border-slate-700 dark:bg-slate-900">
 
       <h2 className="text-xl font-semibold mb-6 text-slate-900 dark:text-slate-100">
-        Add New Component
+        New Components
       </h2>
 
       <FormGrid>
@@ -4354,10 +5017,20 @@ async function handleSubmit(e) {
             name="component_id"
             value={componentForm.component_id}
             readOnly
+            placeholder="Generated automatically"
           />
         </Field>
 
-        <Field label="Category">
+        <Field label="Version">
+          <Input
+            name="version"
+            value={componentForm.version}
+            onChange={handleComponentChange}
+            placeholder="Version"
+          />
+        </Field>
+
+        <Field label="Category" required>
           <Select
             name="category"
             value={componentForm.category}
@@ -4366,7 +5039,7 @@ async function handleSubmit(e) {
           />
         </Field>
 
-        <Field label="Component Type">
+        <Field label="Component Type" required>
           <Input
             name="component_type"
             value={componentForm.component_type}
@@ -4383,7 +5056,7 @@ async function handleSubmit(e) {
           />
         </Field>
 
-        <Field label="HSN No">
+        <Field label="HSN.No">
           <Input
             name="hsn_no"
             value={componentForm.hsn_no}
@@ -4396,7 +5069,7 @@ async function handleSubmit(e) {
           />
         </Field>
 
-        <Field label="SKU No">
+        <Field label="SKU.No">
           <Input
             name="sku_no"
             value={componentForm.sku_no}
@@ -4404,7 +5077,7 @@ async function handleSubmit(e) {
           />
         </Field>
 
-        <Field label="Part No">
+        <Field label="Part.No">
           <Input
             name="part_no"
             value={componentForm.part_no}
@@ -4416,14 +5089,6 @@ async function handleSubmit(e) {
           <Input
             name="tally_reference"
             value={componentForm.tally_reference}
-            onChange={handleComponentChange}
-          />
-        </Field>
-
-        <Field label="UOM">
-          <Input
-            name="unit_of_measurements"
-            value={componentForm.unit_of_measurements}
             onChange={handleComponentChange}
           />
         </Field>

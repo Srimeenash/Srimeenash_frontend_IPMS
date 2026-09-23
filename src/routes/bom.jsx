@@ -4,7 +4,6 @@ import { Link, useNavigate, useLocation } from "react-router-dom";
 import { PageShell, PageHeader } from "@/components/app/PageShell";
 import { DataTable } from "@/components/app/DataTable";
 import { PaginationControls } from "@/components/app/PaginationControls";
-import { boms } from "@/lib/mock-data";
 import config from "@/config";
 import { Loader2, Plus } from "lucide-react";
 import { fetchJson, fetchAuthenticatedJson } from "@/api";
@@ -42,54 +41,133 @@ const [
     setSelectionMode(false);
   };
 
+  const loadBOMs = async () => {
+    setLoading(true);
+
+    try {
+      const data = await fetchAuthenticatedJson(
+        `${config.baseURL}/bom/bom/`,
+        {
+          cache: "no-store",
+        },
+      );
+
+      const list = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.results)
+          ? data.results
+          : [];
+
+      // Backend is the source of truth. Never restore deleted BOMs
+      // from mock-data when the real API returns an empty list.
+      setBomList(list);
+    } catch (err) {
+      console.error("Failed to load BOM records:", err);
+
+      // Avoid showing fake/stale rows when the backend request fails.
+      setBomList([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleDeleteSelected = async () => {
     if (!selectedRowKeys.length) return;
 
-    try {
-      const rowsToDelete = bomList.filter((row, index) => {
-        const key = String(row?.id ?? row?.bom_number ?? row?.code ?? `row-${index}`);
-        return selectedRowKeys.includes(key);
-      });
+    const rowsToDelete = bomList.filter((row, index) => {
+      const key = String(
+        row?.id ??
+          row?.bom_number ??
+          row?.code ??
+          `row-${index}`,
+      );
 
-      await Promise.all(
+      return selectedRowKeys.includes(key);
+    });
+
+    if (!rowsToDelete.length) {
+      setSelectedRowKeys([]);
+      setSelectionMode(false);
+      await loadBOMs();
+      return;
+    }
+
+    try {
+      const results = await Promise.allSettled(
         rowsToDelete.map((row) => {
-          const id = row?.id ?? row?.bom_number ?? row?.code;
+          const id =
+            row?.id ??
+            row?.bom_number ??
+            row?.code;
+
           return fetchAuthenticatedJson(
             `${config.baseURL}/bom/bom/${encodeURIComponent(id)}/`,
-            { method: "DELETE" },
+            {
+              method: "DELETE",
+            },
           );
         }),
       );
 
-      setBomList((prev) =>
-        prev.filter((row, index) => {
-          const key = String(row?.id ?? row?.bom_number ?? row?.code ?? `row-${index}`);
-          return !selectedRowKeys.includes(key);
-        }),
-      );
+      const realFailures = results.filter((result) => {
+        if (result.status !== "rejected") {
+          return false;
+        }
+
+        const message = String(
+          result.reason?.message ||
+            result.reason?.detail ||
+            result.reason ||
+            "",
+        ).toLowerCase();
+
+        // If Django says the BOM is already gone, the desired state
+        // has already been reached. Do not treat that as a UI failure.
+        return !(
+          message.includes("no bom matches") ||
+          message.includes("not found") ||
+          message.includes("404")
+        );
+      });
+
       setSelectedRowKeys([]);
       setSelectionMode(false);
+
+      // Always reload from the database after deletion.
+      await loadBOMs();
+
+      window.dispatchEvent(
+        new Event("notificationsUpdated"),
+      );
+
+      if (realFailures.length > 0) {
+        console.error(
+          "Some BOM records could not be deleted:",
+          realFailures,
+        );
+
+        alert(
+          "Some BOM records could not be deleted. The BOM list has been refreshed from the backend.",
+        );
+      }
     } catch (err) {
-      console.error("Failed to delete selected BOM records:", err);
-      alert("Unable to delete selected BOM records. Please try again.");
+      console.error(
+        "Failed to delete selected BOM records:",
+        err,
+      );
+
+      setSelectedRowKeys([]);
+      setSelectionMode(false);
+
+      await loadBOMs();
+
+      alert(
+        "Unable to complete the BOM deletion. The BOM list has been refreshed from the backend.",
+      );
     }
   };
 
   useEffect(() => {
-    async function loadBOMs() {
-      setLoading(true);
-      try {
-        const data = await fetchJson(`${config.baseURL}/bom/bom/`);
-        const list = Array.isArray(data) ? data : data.results || [];
-        setBomList(list.length ? list : boms);
-      } catch (err) {
-        console.warn("BOM backend unavailable, loading fallback BOM data.", err);
-        setBomList(boms);
-      } finally {
-        setLoading(false);
-      }
-    }
-
     loadBOMs();
   }, [location.key]);
 const getStatusStyle = (status) => {
@@ -280,6 +358,16 @@ _jsx(PageHeader, {
         selectedRowKeys: selectedRowKeys,
         onSelectedRowKeysChange: setSelectedRowKeys,
         columns: [
+{
+  key: "sno",
+  header: "S.No",
+  className: "w-[5rem] text-center",
+  disableColumnTools: true,
+  render: (_row, index) =>
+    (bomPage - 1) * BOM_PAGE_SIZE +
+    index +
+    1,
+},
 {
   key: "bom_number",
   header: "BOM ID",

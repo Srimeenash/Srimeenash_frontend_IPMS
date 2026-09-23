@@ -1442,14 +1442,16 @@ function OutwardPage() {
         ? row.inventory_allocations
         : {};
 
-    return (
-      String(
-        metadata?.workflow || ""
-      )
-        .trim()
-        .toUpperCase() ===
-      "RETURNABLE_COMPONENT_QC_V1"
-    );
+    const workflow = String(
+      metadata?.workflow || ""
+    )
+      .trim()
+      .toUpperCase();
+
+    return [
+      "RETURNABLE_COMPONENT_QC_V1",
+      "RETURNABLE_DRONE_QC_V1",
+    ].includes(workflow);
   }
 
   function getReturnableRestoreStatus(
@@ -2786,6 +2788,17 @@ const columns =
   selectedTab === "scrap"
     ? [
         {
+          key: "sno",
+          header: "S.No",
+          className: "w-[5rem] text-center",
+          disableColumnTools: true,
+          render: (_row, index) =>
+            (outwardPage - 1) *
+              OUTWARD_PAGE_SIZE +
+            index +
+            1,
+        },
+        {
           key: "requestedBy",
           header: "Requested By",
           className: "text-center text-sm",
@@ -2930,6 +2943,17 @@ const columns =
       ]
     : selectedTab === "sales"
       ? [
+          {
+            key: "sno",
+            header: "S.No",
+            className: "w-[5rem] text-center",
+            disableColumnTools: true,
+            render: (_row, index) =>
+              (outwardPage - 1) *
+                OUTWARD_PAGE_SIZE +
+              index +
+              1,
+          },
           { key: "outDate", header: "Out Date", className: "text-center" },
           {
             key: "materialRequestNumber",
@@ -3013,6 +3037,17 @@ const columns =
           },
         ]
       : [
+        {
+          key: "sno",
+          header: "S.No",
+          className: "w-[5rem] text-center",
+          disableColumnTools: true,
+          render: (_row, index) =>
+            (outwardPage - 1) *
+              OUTWARD_PAGE_SIZE +
+            index +
+            1,
+        },
         {
           key: "outDate",
           header: "Date",
@@ -3212,8 +3247,8 @@ const columns =
              * 2. Direct standard PO QC fail:
              *        Replacement + Refund
              *
-             * 3. Returnable component AFTER Engineer returned it
-             *    and Inventory Return QC failed:
+             * 3. BAD component from any Returnable Return-QC failure
+             *    (Flight Test / Demo / QC Check / Event / Misc):
              *        Restore ONLY
              */
             if (
@@ -3244,7 +3279,7 @@ const columns =
                         ? "This restored component has been returned to In Store."
                         : restoreRequested
                           ? "Restore is already in Procurement / Finance / PO processing."
-                          : "Send only the returned QC-failed component to Procurement for Restore."
+                          : "Send only this Returnable QC-failed BAD component into the Restore replacement flow."
                     }
                   >
                     {isRestoreSaving

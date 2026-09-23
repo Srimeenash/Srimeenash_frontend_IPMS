@@ -598,6 +598,14 @@ export default function Page() {
 
   const columns = [
     {
+      key: "sno",
+      header: "S.No",
+      className: "w-[5rem] text-center",
+      disableColumnTools: true,
+      render: (_row, index) =>
+        index + 1,
+    },
+    {
       key: "project_code",
       header: "Project ID",
       className: "w-[11rem] text-center",

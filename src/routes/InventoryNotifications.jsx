@@ -1099,7 +1099,7 @@ export default function InventoryNotifications() {
        */
       const actualNotifications =
         notificationList
-          .filter((notification) => {
+          .filter((notification, index) => {
             return (
               normalizeStatus(
                 notification.category,
@@ -3148,10 +3148,13 @@ const setProvideIssueError = (message) => {
             className="grid items-center border-b border-slate-200 bg-slate-100 px-5 py-4 text-xs font-semibold uppercase tracking-wide text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
             style={{
               gridTemplateColumns: canSeeCosting
-                ? "repeat(11, minmax(0, 1fr))"
-                : "repeat(10, minmax(0, 1fr))",
+                ? "repeat(12, minmax(0, 1fr))"
+                : "repeat(11, minmax(0, 1fr))",
             }}
           >
+            <div className="text-center">
+              S.No
+            </div>
             <div className="text-center">
               MR ID
             </div>
@@ -3218,10 +3221,11 @@ const setProvideIssueError = (message) => {
                       className="grid items-center px-5 py-4 text-sm text-slate-700 transition hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-900/70"
                       style={{
                         gridTemplateColumns: canSeeCosting
-                          ? "repeat(11, minmax(0, 1fr))"
-                          : "repeat(10, minmax(0, 1fr))",
+                          ? "repeat(12, minmax(0, 1fr))"
+                          : "repeat(11, minmax(0, 1fr))",
                       }}
                     >
+                      <div className="px-2 text-center font-semibold">{index + 1}</div>
                       <div className="flex justify-center px-2">
                         <button
                           type="button"

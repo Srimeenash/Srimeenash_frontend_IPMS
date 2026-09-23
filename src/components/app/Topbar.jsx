@@ -569,6 +569,15 @@ const totalNotifications = groupedProcurement.reduce(
 
 const [showProfileDropdown, setShowProfileDropdown] = useState(false);
 
+/*
+ * Profile dropdown click-outside support.
+ *
+ * The ref wraps BOTH the user/name trigger and the dropdown, so clicks on
+ * either are treated as inside clicks. Any mouse/touch interaction elsewhere
+ * on the page closes the dropdown.
+ */
+const profileDropdownRef = useRef(null);
+
 const unreadCount = totalNotifications;
   
   const [showNotificationDropdown, setShowNotificationDropdown] = useState(false);
@@ -1256,6 +1265,49 @@ useEffect(() => {
   };
 }, [role]);
 
+  /*
+   * Close the profile dropdown whenever the user clicks/taps anywhere
+   * outside the profile trigger/dropdown.
+   */
+  useEffect(() => {
+    if (!showProfileDropdown) {
+      return undefined;
+    }
+
+    const handleProfileOutsidePointer = (event) => {
+      const container = profileDropdownRef.current;
+
+      if (
+        container &&
+        !container.contains(event.target)
+      ) {
+        setShowProfileDropdown(false);
+        setRoleSwitchError("");
+      }
+    };
+
+    document.addEventListener(
+      "mousedown",
+      handleProfileOutsidePointer,
+    );
+    document.addEventListener(
+      "touchstart",
+      handleProfileOutsidePointer,
+      { passive: true },
+    );
+
+    return () => {
+      document.removeEventListener(
+        "mousedown",
+        handleProfileOutsidePointer,
+      );
+      document.removeEventListener(
+        "touchstart",
+        handleProfileOutsidePointer,
+      );
+    };
+  }, [showProfileDropdown]);
+
   // LOAD USER
   useEffect(() => {
     setUserState(user);
@@ -1771,7 +1823,10 @@ onClick={() => {
           </button>
 
           {/* USER */}
-          <div className="relative">
+          <div
+            ref={profileDropdownRef}
+            className="relative"
+          >
             <button
               onClick={() => setShowProfileDropdown(!showProfileDropdown)}
               className="flex items-center gap-3"

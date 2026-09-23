@@ -557,10 +557,11 @@ export default function ScrapNotificationsPage() {
           className="grid bg-muted/40 text-xs font-semibold uppercase px-4 py-3 dark:bg-slate-800 dark:text-slate-200"
           style={{
             gridTemplateColumns: canSeeCosting
-              ? "repeat(7, minmax(0, 1fr))"
-              : "repeat(6, minmax(0, 1fr))",
+              ? "repeat(8, minmax(0, 1fr))"
+              : "repeat(7, minmax(0, 1fr))",
           }}
         >
+          <div className="text-center">S.No</div>
           <div className="text-center">Code</div>
           <div className="text-center">Type</div>
           <div className="text-center">Date</div>
@@ -586,16 +587,17 @@ export default function ScrapNotificationsPage() {
               No scrap approval requests yet
             </div>
           ) : (
-            notifications.map((n) => (
+            notifications.map((n, index) => (
               <div
                 key={n.id}
                 className="grid px-4 py-3 items-center hover:bg-muted/50 transition-colors dark:hover:bg-slate-800"
                 style={{
                   gridTemplateColumns: canSeeCosting
-                    ? "repeat(7, minmax(0, 1fr))"
-                    : "repeat(6, minmax(0, 1fr))",
+                    ? "repeat(8, minmax(0, 1fr))"
+                    : "repeat(7, minmax(0, 1fr))",
                 }}
               >
+                <div className="text-center text-sm font-semibold">{index + 1}</div>
                 {/* CODE */}
                 <div className="text-center text-sm font-medium">{n.code}</div>
 

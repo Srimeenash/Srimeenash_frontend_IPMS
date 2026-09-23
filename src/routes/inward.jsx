@@ -249,6 +249,7 @@ export default function InwardPage() {
 
   const [componentForm, setComponentForm] = useState({
     component_id: "AC_0001",
+    version: "",
     name: "",
     category: "",
     component_type: "",
@@ -1163,8 +1164,32 @@ async function submitVendor(e) {
       return;
     }
 
-    if (!componentForm.unit_of_measurements.trim()) {
-      alert("Unit of measurement is required");
+    const componentType = String(
+      componentForm.component_type || ""
+    ).trim();
+
+    if (!componentType) {
+      alert("Component Type is required");
+      return;
+    }
+
+    /*
+     * HSN is optional, but when entered the backend requires 4-8 digits.
+     * Strip accidental spaces/non-digits before validating/sending.
+     */
+    const hsnNumber = String(
+      componentForm.hsn_no || ""
+    )
+      .replace(/\D/g, "")
+      .slice(0, 8);
+
+    if (
+      hsnNumber &&
+      !/^\d{4,8}$/.test(hsnNumber)
+    ) {
+      alert(
+        "HSN.No must contain 4 to 8 digits, or leave it blank."
+      );
       return;
     }
 
@@ -1202,24 +1227,39 @@ async function submitVendor(e) {
     const payload = {
       request_id: `CR-${Date.now()}`,
       component_id: componentId,
-      category: componentForm.category,
-      component_type: String(
-        componentForm.component_type || ""
+      version: String(
+        componentForm.version || ""
       ).trim(),
-      specifications: componentForm.specifications.trim(),
-      unit_of_measurements: componentForm.unit_of_measurements.trim(),
-      hsn_numbers: componentForm.hsn_no.trim(),
-      sku_numbers: componentForm.sku_no.trim(),
-      part_numbers: componentForm.part_no.trim(),
-      tally_reference: componentForm.tally_reference.trim(),
-      product_link: componentForm.product_link.trim(),
+      category: componentForm.category,
+      component_type: componentType,
+      specifications: String(
+        componentForm.specifications || ""
+      ).trim(),
+      sku_numbers: String(
+        componentForm.sku_no || ""
+      ).trim(),
+      part_numbers: String(
+        componentForm.part_no || ""
+      ).trim(),
+      tally_reference: String(
+        componentForm.tally_reference || ""
+      ).trim(),
+      product_link: String(
+        componentForm.product_link || ""
+      ).trim(),
       date: new Date().toISOString().split("T")[0],
       is_active: true,
     };
 
+    /*
+     * Do not POST hsn_numbers: "" because the serializer rejects an empty
+     * string. If an HSN was entered, send the normalized value explicitly.
+     */
+    if (hsnNumber) {
+      payload.hsn_numbers = hsnNumber;
+    }
+
     try {
-      // IMPORTANT: config.baseURL already ends with /api.
-      // Correct URL: /api/components/components/
       const result = await fetchAuthenticatedJson(
         `${config.baseURL}/components/components/`,
         {
@@ -1232,10 +1272,47 @@ async function submitVendor(e) {
         throw new Error("Failed to create component");
       }
 
+      /*
+       * Some Component create serializers return/create the record but may
+       * omit an optional HSN during custom create handling. Verify the saved
+       * record and PATCH the HSN once when necessary so the entered HSN is
+       * guaranteed to persist in Component Master.
+       */
+      if (hsnNumber) {
+        const createdPrimaryKey =
+          result?.id ??
+          result?.pk ??
+          result?.component_pk ??
+          null;
+
+        const savedHsn = String(
+          result?.hsn_numbers ??
+          result?.hsn_no ??
+          result?.hsn ??
+          ""
+        ).trim();
+
+        if (
+          createdPrimaryKey != null &&
+          savedHsn !== hsnNumber
+        ) {
+          await fetchAuthenticatedJson(
+            `${config.baseURL}/components/components/${encodeURIComponent(
+              createdPrimaryKey
+            )}/`,
+            {
+              method: "PATCH",
+              body: JSON.stringify({
+                hsn_numbers: hsnNumber,
+              }),
+            }
+          );
+        }
+      }
+
       setComponentsModalOpen(false);
 
-      // Reload first so the newly-created Component is included when
-      // calculating the next category-wise Component ID.
+      // Reload Component Master so the new HSN appears immediately.
       await loadAllData();
 
       const nextComponentId =
@@ -1243,6 +1320,7 @@ async function submitVendor(e) {
 
       setComponentForm({
         component_id: nextComponentId,
+        version: "",
         name: "",
         category: "ACCESSORIES",
         component_type: "",
@@ -1254,15 +1332,35 @@ async function submitVendor(e) {
         unit_of_measurements: "",
         product_link: "",
       });
+
+      alert(
+        `Component ${componentId} saved successfully${
+          hsnNumber ? ` with HSN ${hsnNumber}` : ""
+        }.`
+      );
     } catch (err) {
-      console.error("Error saving component:", err);
-      alert(err?.message || "Failed to save component");
+      console.error(
+        "Error saving component:",
+        err
+      );
+
+      alert(
+        err?.message ||
+        "Failed to save component"
+      );
     } finally {
       setSavingComponent(false);
     }
   }
 
   const columns = [
+{
+  key: "sno",
+  header: "S.No",
+  className: "w-[5rem] text-center",
+  disableColumnTools: true,
+  render: (_row, index) => index + 1,
+},
 {
   key: "code",
   header: "INW",
@@ -1883,12 +1981,12 @@ async function submitVendor(e) {
             <Dialog open={componentsModalOpen} onOpenChange={handleComponentDialogOpenChange}>
               <div>
                 <DialogTrigger asChild>
-                  <button className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-secondary">Add Component</button>
+                  <button className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-secondary">+ New Component</button>
                 </DialogTrigger>
                 <DialogContent className="max-w-2xl">
                   <form onSubmit={submitComponent}>
                     <DialogHeader>
-                      <DialogTitle>Add Component</DialogTitle>
+                      <DialogTitle>New Component</DialogTitle>
                     </DialogHeader>
                     <FormGrid>
                       <Field label="Component ID" required>
@@ -1902,6 +2000,14 @@ async function submitVendor(e) {
                         />
                       </Field>
 
+
+                      <Field label="Version">
+                        <Input
+                          name="version"
+                          value={componentForm.version || ""}
+                          onChange={handleComponentChange}
+                        />
+                      </Field>
 
                       <Field label="Category" required>
                         <Select
@@ -1920,7 +2026,7 @@ async function submitVendor(e) {
                         />
                       </Field>
 
-                      <Field label="Component Type">
+                      <Field label="Component Type" required>
                         <Input
                           name="component_type"
                           value={componentForm.component_type}
@@ -1934,7 +2040,26 @@ async function submitVendor(e) {
                       </Field>
 
                       <Field label="HSN.No">
-                        <Input name="hsn_no" value={componentForm.hsn_no} onChange={handleComponentChange} inputMode="numeric" pattern="\\d{4,8}" minLength={4} maxLength={8} title="Enter 4 to 8 digits, or leave blank." />
+                        <Input
+                          name="hsn_no"
+                          value={componentForm.hsn_no || ""}
+                          inputMode="numeric"
+                          pattern="\d{4,8}"
+                          minLength={4}
+                          maxLength={8}
+                          title="Enter 4 to 8 digits, or leave blank."
+                          placeholder="4 to 8 digits"
+                          onChange={(event) =>
+                            setComponentForm((previous) => ({
+                              ...previous,
+                              hsn_no: String(
+                                event.target.value || ""
+                              )
+                                .replace(/\D/g, "")
+                                .slice(0, 8),
+                            }))
+                          }
+                        />
                       </Field>
 
                       <Field label="SKU.No">
@@ -1948,12 +2073,7 @@ async function submitVendor(e) {
                       <Field label="Tally Reference">
                         <Input name="tally_reference" value={componentForm.tally_reference} onChange={handleComponentChange} />
                       </Field>
-
-                      <Field label="UOM" required>
-                        <Input name="unit_of_measurements" value={componentForm.unit_of_measurements} onChange={handleComponentChange} required />
-                      </Field>
-
-                      <Field label="Product Link">
+<Field label="Product Link">
                         <Input name="product_link" value={componentForm.product_link} onChange={handleComponentChange} placeholder="https://..." />
                       </Field>
                     </FormGrid>

@@ -8717,6 +8717,10 @@ issued_to:
         return "Event";
       case "CUSTOMER_DEMO":
         return "Demo/Trials";
+      case "QC_CHECK":
+        return "QC Check";
+      case "MISCELLANEOUS_USAGE":
+        return "Miscellaneous Usage";
       default:
         return "Returnable";
     }
@@ -9187,6 +9191,16 @@ issued_to:
     return result;
   };
 
+  const isReturnedQcPending = (row) =>
+    Boolean(
+      canPerformReturnedQc &&
+        String(
+          row?.qc_status || "",
+        )
+          .trim()
+          .toUpperCase() === "RETURNED",
+    );
+
   const openReturnedQc = (row) => {
     setReturnedQcModal({
       open: true,
@@ -9518,7 +9532,9 @@ issued_to:
               [
                 "FLIGHT_TEST",
                 "CUSTOMER_DEMO",
+                "QC_CHECK",
                 "EVENT",
+                "MISCELLANEOUS_USAGE",
               ].includes(purpose);
 
             returnedGroupMap.set(groupKey, {
@@ -9630,8 +9646,8 @@ issued_to:
         } else if (allOk && allCompleted) {
           group.qc_status =
             group.mode === "DRONE"
-              ? "QC Passed - Drone Ready"
-              : "QC Passed - In Store";
+              ? "QC Completed"
+              : "QC Completed - In Store";
         } else if (conditions.every((value) => !value)) {
           /*
            * Engineer has handed the movement back to Inventory.
@@ -10561,7 +10577,9 @@ issued_to:
             ![
               "FLIGHT_TEST",
               "CUSTOMER_DEMO",
+              "QC_CHECK",
               "EVENT",
+              "MISCELLANEOUS_USAGE",
             ].includes(purpose)
           ) {
             return;
@@ -10644,8 +10662,12 @@ issued_to:
               return "Flight Test";
             case "CUSTOMER_DEMO":
               return "Demo/Trials";
+            case "QC_CHECK":
+              return "QC Check";
             case "EVENT":
               return "Event";
+            case "MISCELLANEOUS_USAGE":
+              return "Miscellaneous Usage";
             default:
               return "Returnable";
           }
@@ -11117,13 +11139,95 @@ issued_to:
           const suffix = instance?.suffix || `_${String(instance?.sequence || 1).padStart(2, "0")}`;
           const baseMr = item?.material_request_id || item?.request_id || item?.mr_id || `MR-${item?.id || ""}`;
           const isScrap = ["SCRAP_PENDING", "SCRAPPED", "SCRAPPED_REORDERED"].includes(instanceStatus);
+          const instanceWorkflow =
+            instance?.workflow_metadata &&
+            typeof instance.workflow_metadata ===
+              "object"
+              ? instance.workflow_metadata
+              : {};
+
           const returnableLabels = {
             RETURNABLE_PENDING: "Returnable Pending",
             RETURNABLE_ACTIVE: "Returnable Active",
             RETURN_QC_PENDING: "Return QC Pending",
             QC_FAILED: "QC Failed",
           };
-          const returnableLabel = returnableLabels[instanceStatus];
+
+          const instancePurpose =
+            String(
+              instanceWorkflow?.purpose ||
+                "",
+            )
+              .trim()
+              .toUpperCase();
+
+          const instancePurposeLabel =
+            instancePurpose === "FLIGHT_TEST"
+              ? "Flight Test"
+              : instancePurpose === "CUSTOMER_DEMO"
+                ? "Demo/Trials"
+                : instancePurpose === "QC_CHECK"
+                  ? "QC Check"
+                  : instancePurpose === "EVENT"
+                    ? "Event"
+                    : instancePurpose === "MISCELLANEOUS_USAGE"
+                      ? "Miscellaneous Usage"
+                      : (
+                          instanceWorkflow?.purpose_label ||
+                          "Returnable"
+                        );
+
+          const returnableLabel =
+            instanceStatus === "QC_FAILED"
+              ? `${instancePurposeLabel} QC Failed`
+              : returnableLabels[instanceStatus];
+
+          const qcCompleted =
+            instanceStatus === "AVAILABLE" &&
+            String(
+              instanceWorkflow?.workflow ||
+                "",
+            )
+              .trim()
+              .toUpperCase() ===
+              "RETURN_QC" &&
+            String(
+              instanceWorkflow?.qc_status ||
+                "",
+            )
+              .trim()
+              .toUpperCase() ===
+              "PASSED";
+
+          const completedPurpose =
+            String(
+              instanceWorkflow?.purpose ||
+                "",
+            )
+              .trim()
+              .toUpperCase();
+
+          const completedPurposeLabel =
+            completedPurpose ===
+            "FLIGHT_TEST"
+              ? "Flight Test"
+              : completedPurpose ===
+                  "CUSTOMER_DEMO"
+                ? "Demo/Trials"
+                : completedPurpose ===
+                    "QC_CHECK"
+                  ? "QC Check"
+                  : completedPurpose ===
+                      "EVENT"
+                    ? "Event"
+                    : completedPurpose ===
+                        "MISCELLANEOUS_USAGE"
+                      ? "Miscellaneous Usage"
+                      : (
+                          instanceWorkflow?.purpose_label ||
+                          "Returnable"
+                        );
+
           return {
             ...item,
             id: `drone-instance-${instance.id}`,
@@ -11135,8 +11239,14 @@ issued_to:
             droneInstanceSuffix: suffix,
             droneInstanceDisplay: `${baseMr} / ${suffix}`,
             droneInstanceStatus: instanceStatus,
-            droneInstanceStatusLabel: instance?.status_label || instanceStatus.replaceAll("_", " "),
-            droneInstanceWorkflow: instance?.workflow_metadata || {},
+            droneInstanceStatusLabel:
+              instanceStatus === "QC_FAILED"
+                ? `${instancePurposeLabel} QC Failed`
+                : (
+                    instance?.status_label ||
+                    instanceStatus.replaceAll("_", " ")
+                  ),
+            droneInstanceWorkflow: instanceWorkflow,
             droneInstanceReplacementMrNumber: instance?.replacement_mr_number || "",
             droneInstanceAllocations: Array.isArray(instance?.component_allocations)
               ? instance.component_allocations
@@ -11169,7 +11279,15 @@ issued_to:
                   tone: instanceStatus === "QC_FAILED" ? "QC_FAILED" : "PENDING",
                   quantity: 1,
                 }]
-              : [],
+              : qcCompleted
+                ? [{
+                    key: `instance-${instance.id}-qc-completed`,
+                    label: `${completedPurposeLabel} Completed • QC Completed: 1`,
+                    tone: "QC_PASSED",
+                    quantity: 1,
+                    purpose: completedPurpose,
+                  }]
+                : [],
             inDroneReplacementCompleted: Boolean(instance?.replacement_mr_number),
             inDroneReplacementMrNumber: instance?.replacement_mr_number || "",
             inDroneReplacementType: String(instance?.replacement_mr_number || "").toUpperCase().endsWith("_FR")
@@ -17199,6 +17317,13 @@ const getRowsForCurrentTab = () => {
               <DataTable
                 columns={[
                   {
+                    key: "sno",
+                    header: "S.No",
+                    className: "w-[5rem] text-center",
+                    disableColumnTools: true,
+                    render: (_, index) => index + 1,
+                  },
+                  {
                     key: "location",
                     header: "Location",
                     render: (row) => (
@@ -17415,6 +17540,13 @@ const getRowsForCurrentTab = () => {
 <div className="rounded-3xl border border-border bg-card p-0 shadow-sm">              <DataTable
                 columns={[...([
                  {
+                   key: "sno",
+                   header: "S.No",
+                   className: "w-[5rem] text-center",
+                   disableColumnTools: true,
+                   render: (_, index) => index + 1,
+                 },
+                 {
                    key: "component",
                    header: "Component",
                    render: (row) => row.component || row.component_name || row.name || row.productName || row.product_name || "-",
@@ -17548,6 +17680,13 @@ const getRowsForCurrentTab = () => {
             <div className="rounded-3xl border border-border bg-card p-0 shadow-sm">
               <DataTable
                columns={[...([
+  {
+    key: "sno",
+    header: "S.No",
+    className: "w-[5rem] text-center",
+    disableColumnTools: true,
+    render: (_, index) => index + 1,
+  },
   {
     key: "material_request_id",
     header: "MR Number",
@@ -17741,7 +17880,7 @@ const getRowsForCurrentTab = () => {
               Returned
             </div>
             <p className="mt-2 text-sm text-muted-foreground">
-              Returned drones and components are shown here for view-only audit history. Return QC and all workflow actions are handled only from the Returnable page.
+              Returned drones and components are shown here for Inventory/Admin QC. After Drone QC is completed successfully, the same physical drone becomes available again in In Drone for Sale/next Returnable action. Passed loose components move to In Store; failed items continue to QC Failed disposition.
             </p>
           </div>
 
@@ -17749,6 +17888,13 @@ const getRowsForCurrentTab = () => {
             <DataTable
               enableColumnTools
               columns={[
+                {
+                  key: "sno",
+                  header: "S.No",
+                  className: "w-[5rem] text-center",
+                  disableColumnTools: true,
+                  render: (_, index) => index + 1,
+                },
                 {
                   key: "material_request_id",
                   header: "MR ID",
@@ -17847,17 +17993,40 @@ const getRowsForCurrentTab = () => {
                 },
                 {
                   key: "view",
-                  header: "View",
+                  header: "Action",
                   className: "text-center",
                   render: (row) => (
-                    <button
-                      type="button"
-                      onClick={() => openReturnedQc(row)}
-                      className="rounded-lg border border-border px-3 py-1.5 text-xs font-semibold transition hover:border-primary hover:text-primary"
-                      title="View returned details"
-                    >
-                      View Details
-                    </button>
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      {isReturnedQcPending(
+                        row,
+                      ) && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openReturnedQc(
+                              row,
+                            )
+                          }
+                          className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-amber-700"
+                          title="Perform returned serial/component QC"
+                        >
+                          QC Check
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openReturnedQc(
+                            row,
+                          )
+                        }
+                        className="rounded-lg border border-border px-3 py-1.5 text-xs font-semibold transition hover:border-primary hover:text-primary"
+                        title="View returned details"
+                      >
+                        View Details
+                      </button>
+                    </div>
                   ),
                 },
               ]}
@@ -17880,7 +18049,13 @@ const getRowsForCurrentTab = () => {
           <div className="max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-border bg-white shadow-2xl dark:bg-slate-950">
             <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-5">
               <div>
-                <h3 className="text-lg font-semibold text-foreground">Returned Details</h3>
+                <h3 className="text-lg font-semibold text-foreground">
+                  {isReturnedQcPending(
+                    returnedQcModal.row,
+                  )
+                    ? "Return QC Check"
+                    : "Returned Details"}
+                </h3>
                 <p className="mt-1 text-sm text-muted-foreground">
                   {returnedQcModal.row.material_request_id} · {returnedQcModal.row.mode === "DRONE" ? "Drone" : "Components"} · {returnedQcModal.row.returned_from}
                 </p>
@@ -17928,7 +18103,61 @@ const getRowsForCurrentTab = () => {
                             {item.serialNumber || `No serial recorded · Unit ${item.unitIndex}`}
                           </td>
                           <td className="px-4 py-3 text-center">
-                            {item.result ? (
+                            {isReturnedQcPending(
+                              returnedQcModal.row,
+                            ) ? (
+                              <div className="flex flex-wrap items-center justify-center gap-2">
+                                <button
+                                  type="button"
+                                  disabled={
+                                    returnedQcModal.saving
+                                  }
+                                  onClick={() =>
+                                    updateReturnedQcRow(
+                                      item.key,
+                                      {
+                                        result:
+                                          "OK",
+                                        remarks:
+                                          "",
+                                      },
+                                    )
+                                  }
+                                  className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${
+                                    item.result ===
+                                    "OK"
+                                      ? "border-emerald-600 bg-emerald-600 text-white"
+                                      : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-500"
+                                  }`}
+                                >
+                                  PASS
+                                </button>
+
+                                <button
+                                  type="button"
+                                  disabled={
+                                    returnedQcModal.saving
+                                  }
+                                  onClick={() =>
+                                    updateReturnedQcRow(
+                                      item.key,
+                                      {
+                                        result:
+                                          "NOT_OK",
+                                      },
+                                    )
+                                  }
+                                  className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${
+                                    item.result ===
+                                    "NOT_OK"
+                                      ? "border-rose-600 bg-rose-600 text-white"
+                                      : "border-rose-200 bg-rose-50 text-rose-700 hover:border-rose-500"
+                                  }`}
+                                >
+                                  FAIL
+                                </button>
+                              </div>
+                            ) : item.result ? (
                               <span
                                 className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${
                                   item.result === "OK"
@@ -17945,9 +18174,43 @@ const getRowsForCurrentTab = () => {
                             )}
                           </td>
                           <td className="px-4 py-3">
-                            <span className="block min-w-[220px] whitespace-normal text-sm text-foreground">
-                              {item.remarks || "-"}
-                            </span>
+                            {isReturnedQcPending(
+                              returnedQcModal.row,
+                            ) ? (
+                              <input
+                                type="text"
+                                value={
+                                  item.remarks ||
+                                  ""
+                                }
+                                disabled={
+                                  returnedQcModal.saving ||
+                                  item.result !==
+                                    "NOT_OK"
+                                }
+                                onChange={(event) =>
+                                  updateReturnedQcRow(
+                                    item.key,
+                                    {
+                                      remarks:
+                                        event.target
+                                          .value,
+                                    },
+                                  )
+                                }
+                                placeholder={
+                                  item.result ===
+                                  "NOT_OK"
+                                    ? "Failure remarks required"
+                                    : "Required only for FAIL"
+                                }
+                                className="min-w-[220px] rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary disabled:cursor-not-allowed disabled:bg-muted/40 disabled:text-muted-foreground"
+                              />
+                            ) : (
+                              <span className="block min-w-[220px] whitespace-normal text-sm text-foreground">
+                                {item.remarks || "-"}
+                              </span>
+                            )}
                           </td>
                         </tr>
                       );
@@ -17988,6 +18251,25 @@ const getRowsForCurrentTab = () => {
                 >
                   Close
                 </button>
+
+                {isReturnedQcPending(
+                  returnedQcModal.row,
+                ) && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void submitReturnedQc()
+                    }
+                    disabled={
+                      returnedQcModal.saving
+                    }
+                    className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {returnedQcModal.saving
+                      ? "Saving QC..."
+                      : "Complete QC"}
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -18153,6 +18435,13 @@ const getRowsForCurrentTab = () => {
             <div className="in-drone-table">
             <DataTable
               columns={[
+                {
+                  key: "sno",
+                  header: "S.No",
+                  className: "w-[5rem] text-center",
+                  disableColumnTools: true,
+                  render: (_, index) => index + 1,
+                },
                 {
                   key: "material_request_id",
                   header: "MR ID",
@@ -21084,6 +21373,13 @@ const getRowsForCurrentTab = () => {
                 className="max-h-[calc(88vh-10rem)] rounded-none border-0 shadow-none"
                 rows={getPurchaseHistoryForComponent(purchaseHistoryModal.component)}
                 columns={[
+                  {
+                    key: "sno",
+                    header: "S.No",
+                    className: "w-[5rem] text-center",
+                    disableColumnTools: true,
+                    render: (_, index) => index + 1,
+                  },
                   {
                     key: "date",
                     header: "PO Date",

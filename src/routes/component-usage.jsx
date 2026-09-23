@@ -215,7 +215,13 @@ const getUsageMode = (row = {}) => {
 
   if (
     requestType !== "RETURNABLE" &&
-    ["FLIGHT_TEST", "CUSTOMER_DEMO", "EVENT"].includes(purpose)
+    [
+      "FLIGHT_TEST",
+      "CUSTOMER_DEMO",
+      "QC_CHECK",
+      "EVENT",
+      "MISCELLANEOUS_USAGE",
+    ].includes(purpose)
   ) {
     return "DRONE";
   }
@@ -612,13 +618,13 @@ const getStatusLabel = (status) => {
       "QC Failed - Pending Finance Approval",
     QC_FAILED: "QC Failed",
     QC_PASSED_DRONE_READY:
-      "QC Passed - Drone Ready",
+      "QC Completed",
     QC_PASSED_RETURNED_TO_STORE:
-      "Moved to In Store",
+      "QC Completed - In Store",
     RESTORE_PENDING_PROCUREMENT:
-      "Reorder Approved - Pending Procurement",
+      "QC Failed - Restore Requested",
     RESTORE_PO_RAISED:
-      "Reorder PO Raised - Pending Finance",
+      "QC Failed - Restore PO Raised",
     DRONE_QC_DISPOSITION_COMPLETED:
       "QC Disposition Completed",
     FINAL_SCRAP_COMPLETED: "Scrapped",
@@ -1567,6 +1573,13 @@ export default function ReturnablePage() {
     return local.toISOString().slice(0, 10);
   };
 
+  const hasCompletedMoveToReturn = (group) =>
+    Boolean(
+      canMoveToReturn &&
+        group &&
+        hasEngineerReturned(group),
+    );
+
   const canEngineerMoveToReturn = (group) => {
     if (!canMoveToReturn || !group) {
       return false;
@@ -1728,22 +1741,59 @@ export default function ReturnablePage() {
         );
       }
 
-      await fetchAuthenticatedJson(
-        `${config.baseURL}/component-usage/${encodeURIComponent(
-          usage.id,
-        )}/engineer-return/`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            return_date:
-              moveReturnDate,
-            remarks:
-              String(
-                moveReturnRemarks || "",
-              ).trim(),
-          }),
-        },
-      );
+      const returnResponse =
+        await fetchAuthenticatedJson(
+          `${config.baseURL}/component-usage/${encodeURIComponent(
+            usage.id,
+          )}/engineer-return/`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              return_date:
+                moveReturnDate,
+              remarks:
+                String(
+                  moveReturnRemarks || "",
+                ).trim(),
+            }),
+          },
+        );
+
+      /*
+       * Update this page immediately from the authoritative response instead
+       * of waiting for another list request. This makes Move to Return vanish
+       * as soon as the backend confirms the hand-back.
+       */
+      const returnedRows =
+        Array.isArray(
+          returnResponse?.rows,
+        )
+          ? returnResponse.rows
+          : [];
+
+      if (returnedRows.length) {
+        const returnedById = new Map(
+          returnedRows.map((row) => [
+            String(row?.id),
+            row,
+          ]),
+        );
+
+        setUsageRows((previous) =>
+          previous.map((row) =>
+            returnedById.has(
+              String(row?.id),
+            )
+              ? {
+                  ...row,
+                  ...returnedById.get(
+                    String(row?.id),
+                  ),
+                }
+              : row,
+          ),
+        );
+      }
 
       window.dispatchEvent(
         new Event(
@@ -2777,7 +2827,11 @@ export default function ReturnablePage() {
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-        <div className="grid grid-cols-[0.9fr_0.85fr_0.95fr_0.62fr_0.58fr_0.68fr_0.68fr_1.45fr_1.05fr_0.78fr] bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <div className="grid grid-cols-[0.42fr_0.9fr_0.85fr_0.95fr_0.62fr_0.58fr_0.68fr_0.68fr_1.45fr_1.05fr_0.78fr] bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          <div className="text-center">
+            S.No
+          </div>
+
           {[
             ["mrNumber", "MR ID"],
             ["requester", "Requester"],
@@ -2840,7 +2894,7 @@ export default function ReturnablePage() {
             No Returnable records found for {formatPurpose(activePurpose)}.
           </div>
         ) : (
-          sortedGroups.map((group) => {
+          sortedGroups.map((group, index) => {
             /*
              * workflowStatus = authoritative backend workflow used by actions.
              * visibleStatus  = role-specific display status.
@@ -2886,8 +2940,12 @@ export default function ReturnablePage() {
             return (
               <div
                 key={group.key}
-                className="grid grid-cols-[0.9fr_0.85fr_0.95fr_0.62fr_0.58fr_0.68fr_0.68fr_1.45fr_1.05fr_0.78fr] items-center border-t border-border px-4 py-4 text-sm"
+                className="grid grid-cols-[0.42fr_0.9fr_0.85fr_0.95fr_0.62fr_0.58fr_0.68fr_0.68fr_1.45fr_1.05fr_0.78fr] items-center border-t border-border px-4 py-4 text-sm"
               >
+                <div className="text-center font-semibold">
+                  {index + 1}
+                </div>
+
                 <div className="font-semibold">
                   {group.mrNumber}
                 </div>
@@ -2973,37 +3031,37 @@ export default function ReturnablePage() {
                   )}
 
                   {canInventoryAction &&
-                  workflowStatus ===
-                    "RETURNED_QC_PENDING" ? (
-                    <button
-                      type="button"
-                      disabled={
-                        serialQcLoading
-                      }
-                      onClick={() =>
-                        void openSerialQc(
-                          group,
-                        )
-                      }
-                      className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-amber-700 disabled:opacity-50"
-                    >
-                      {serialQcLoading
-                        ? "Loading..."
-                        : "QC Check"}
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void openDetailsWithSerials(
-                          group,
-                        )
-                      }
-                      className="rounded-lg border border-border px-3 py-1.5 text-xs font-semibold transition hover:border-primary hover:text-primary"
-                    >
-                      View Details
-                    </button>
-                  )}
+                    workflowStatus ===
+                      "RETURNED_QC_PENDING" && (
+                      <button
+                        type="button"
+                        disabled={
+                          serialQcLoading
+                        }
+                        onClick={() =>
+                          void openSerialQc(
+                            group,
+                          )
+                        }
+                        className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-amber-700 disabled:opacity-50"
+                      >
+                        {serialQcLoading
+                          ? "Loading..."
+                          : "QC Check"}
+                      </button>
+                    )}
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void openDetailsWithSerials(
+                        group,
+                      )
+                    }
+                    className="rounded-lg border border-border px-3 py-1.5 text-xs font-semibold transition hover:border-primary hover:text-primary"
+                  >
+                    View Details
+                  </button>
                 </div>
               </div>
             );

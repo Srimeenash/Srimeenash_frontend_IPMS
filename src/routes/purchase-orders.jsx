@@ -916,7 +916,11 @@ const REPLACEMENT_STATUS_LABELS = {
         return;
       }
 
-      const items = Array.isArray(order?.items) ? order.items : [];
+      const items = (Array.isArray(order?.items) ? order.items : []).filter((item) => {
+        const status = String(order?.status || "").toUpperCase();
+        const remaining = Number(item?.remaining_quantity ?? (Number(item?.quantity || 0) - Number(item?.received_quantity || 0)));
+        return !["DELIVERED", "REPLACEMENT_RECEIVED", "REPLACEMENT_RECEIVED_INVENTORY_ISSUED", "REPLACEMENT_DELIVERY_INVENTORY_ISSUED"].includes(status) && remaining > 0;
+      });
 
       if (!groups.has(vendorName)) {
         groups.set(vendorName, []);
@@ -3170,6 +3174,7 @@ async function submitVendor(e) {
 
     const payload = {
       component_id: normalizedComponentId,
+      version: "",
       category: componentForm.category,
       component_type: String(
         componentForm.component_type || ""
@@ -3179,7 +3184,6 @@ async function submitVendor(e) {
       sku_numbers: componentForm.sku_no,
       part_numbers: componentForm.part_no,
       tally_reference: componentForm.tally_reference,
-      unit_of_measurements: componentForm.unit_of_measurements,
       product_link: componentForm.product_link,
       created_at: new Date().toISOString(),
       date: new Date().toISOString().split("T")[0],
@@ -3949,7 +3953,7 @@ async function submitVendor(e) {
                   asChild: true,
                   children: _jsx("button", {
                     className: "inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-secondary",
-                    children: "Add Component",
+                    children: "+ New Component",
                   }),
                 }),
                 _jsx(DialogContent, {
@@ -3957,7 +3961,7 @@ async function submitVendor(e) {
                   children: _jsxs("form", {
                     onSubmit: submitComponent,
                     children: [
-                      _jsx(DialogHeader, { children: _jsx(DialogTitle, { children: "Add Component" }) }),
+                      _jsx(DialogHeader, { children: _jsx(DialogTitle, { children: "New Component" }) }),
                       _jsxs(FormGrid, {
                         children: [
                           _jsx(Field, {
@@ -3972,6 +3976,7 @@ async function submitVendor(e) {
                               className: "cursor-not-allowed bg-muted font-mono",
                             }),
                           }),
+                          _jsx(Field, { label: "Version", children: _jsx(Input, { name: "version", value: componentForm.version || "", onChange: handleComponentChange }) }),
                           _jsx(Field, { label: "Category", required: true, children: _jsx(Select, { name: "category", value: componentForm.category, onChange: handleComponentChange, options: [
                             { value: "ACCESSORIES", label: "Accessories" },
                             { value: "AIRFRAMES", label: "Airframes" },
@@ -3983,6 +3988,7 @@ async function submitVendor(e) {
                           ] }) }),
                           _jsx(Field, {
                             label: "Component Type",
+                            required: true,
                             children: _jsx(Input, {
                               name: "component_type",
                               value: componentForm.component_type,
@@ -3995,7 +4001,6 @@ async function submitVendor(e) {
                           _jsx(Field, { label: "SKU.No", children: _jsx(Input, { name: "sku_no", value: componentForm.sku_no, onChange: handleComponentChange }) }),
                           _jsx(Field, { label: "Part.No", children: _jsx(Input, { name: "part_no", value: componentForm.part_no, onChange: handleComponentChange }) }),
                           _jsx(Field, { label: "Tally Reference", children: _jsx(Input, { name: "tally_reference", value: componentForm.tally_reference, onChange: handleComponentChange }) }),
-                          _jsx(Field, { label: "UOM", required: true, children: _jsx(Input, { name: "unit_of_measurements", value: componentForm.unit_of_measurements, onChange: handleComponentChange }) }),
                           _jsx(Field, { label: "Product Link", children: _jsx(Input, { name: "product_link", value: componentForm.product_link, onChange: handleComponentChange, placeholder: "https://" }) }),
                         ],
                       }),
@@ -4040,6 +4045,17 @@ _jsx(Link, {
             _jsx(DataTable, {
         enableColumnTools: true,
           columns: [
+{
+  key: "sno",
+  header: "S.No",
+  className: "w-[5rem] text-center",
+  disableColumnTools: true,
+  render: (_row, index) =>
+    (purchaseOrdersPage - 1) *
+      PURCHASE_ORDERS_PAGE_SIZE +
+    index +
+    1,
+},
 {
   key: "po",
   header: "PO Number",

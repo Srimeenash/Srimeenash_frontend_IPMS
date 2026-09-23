@@ -679,7 +679,8 @@ export default function ManagementNotifications() {
       )}
 
       <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-        <div className="grid grid-cols-[1.15fr_2.2fr_1fr_1.1fr_1.5fr] bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <div className="grid grid-cols-[0.4fr_1.15fr_2.2fr_1fr_1.1fr_1.5fr] bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          <div className="text-center">S.No</div>
           <div>MR / Reference</div>
           <div>Sales Components</div>
           <div>Requested By</div>
@@ -709,7 +710,7 @@ export default function ManagementNotifications() {
           </div>
         ) : (
           <div className="divide-y divide-border">
-            {pendingItems.map((item) => {
+            {pendingItems.map((item, index) => {
               const busy = processingId === String(item.firstRow.id);
               const componentSummary = item.rows
                 .map(
@@ -723,8 +724,9 @@ export default function ManagementNotifications() {
               return (
                 <div
                   key={item.notification.id}
-                  className="grid grid-cols-[1.15fr_2.2fr_1fr_1.1fr_1.5fr] items-center px-4 py-4 text-sm"
+                  className="grid grid-cols-[0.4fr_1.15fr_2.2fr_1fr_1.1fr_1.5fr] items-center px-4 py-4 text-sm"
                 >
+                <div className="text-center font-semibold">{index + 1}</div>
                   <div className="font-semibold">
                     {item.firstRow.material_request_number ||
                       item.reference ||
