@@ -353,46 +353,40 @@ export function Sidebar() {
         <div className="size-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center">
           <svg
             viewBox="0 0 24 24"
-            className="size-5 text-primary"
+            className="size-6 text-primary"
             fill="none"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.7"
             strokeLinecap="round"
             strokeLinejoin="round"
+            aria-hidden="true"
           >
-            <circle
-              cx="6"
-              cy="6"
-              r="2"
-            />
+            {/* Premium quadcopter drone icon */}
 
-            <circle
-              cx="18"
-              cy="6"
-              r="2"
-            />
+            {/* Propellers */}
+            <ellipse cx="5" cy="5.5" rx="3.2" ry="1.25" />
+            <ellipse cx="19" cy="5.5" rx="3.2" ry="1.25" />
+            <ellipse cx="5" cy="18.5" rx="3.2" ry="1.25" />
+            <ellipse cx="19" cy="18.5" rx="3.2" ry="1.25" />
 
-            <circle
-              cx="6"
-              cy="18"
-              r="2"
-            />
+            {/* Rotor hubs */}
+            <circle cx="5" cy="5.5" r="0.7" />
+            <circle cx="19" cy="5.5" r="0.7" />
+            <circle cx="5" cy="18.5" r="0.7" />
+            <circle cx="19" cy="18.5" r="0.7" />
 
-            <circle
-              cx="18"
-              cy="18"
-              r="2"
-            />
+            {/* Drone arms */}
+            <path d="M7.2 7.2 9.7 9.6" />
+            <path d="M16.8 7.2 14.3 9.6" />
+            <path d="M7.2 16.8 9.7 14.4" />
+            <path d="M16.8 16.8 14.3 14.4" />
 
-            <rect
-              x="10"
-              y="10"
-              width="4"
-              height="4"
-              rx="1"
-            />
+            {/* Main drone body */}
+            <path d="M10 9.5h4l1.6 2.5-1.6 2.5h-4L8.4 12 10 9.5Z" />
 
-            <path d="M8 6h8M8 18h8M6 8v8M18 8v8" />
+            {/* Camera / sensor */}
+            <circle cx="12" cy="12" r="1.05" />
+            <path d="M11.2 14.5 10.7 16M12.8 14.5l.5 1.5" />
           </svg>
         </div>
 

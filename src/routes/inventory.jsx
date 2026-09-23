@@ -787,6 +787,43 @@ export default function InventoryPage() {
 
   const openProjectQcSerials = (row) => openCostDetails("projectInventory", row);
 
+  /*
+   * In Drone physical rows replace the Material Request's numeric `id`
+   * with a display-only id such as `drone-instance-12`.
+   *
+   * SerialCostDetails requires the real numeric Material Request DB id.
+   * Keep the UI row id unchanged and pass the saved MR reference only
+   * when opening Cost Details.
+   */
+  const openInDroneCostDetails = (row = {}) => {
+    const numericRowId =
+      /^\d+$/.test(String(row?.id ?? "").trim())
+        ? row.id
+        : null;
+
+    const materialRequestDbId =
+      row?.materialRequestDbId ??
+      row?.material_request ??
+      row?.materialRequestId ??
+      row?.material_request_db_id ??
+      row?.backendId ??
+      numericRowId;
+
+    openCostDetails("inDrone", {
+      ...row,
+
+      /*
+       * referencesFor("inDrone", row) checks backendId first.
+       * Supplying the numeric MR id here prevents the synthetic
+       * `drone-instance-*` id from being used as an API reference.
+       */
+      backendId:
+        materialRequestDbId ??
+        row?.backendId ??
+        null,
+    });
+  };
+
   const closeProjectQcSerials = () => {
     setProjectQcSerialModal({
       open: false,
@@ -17437,12 +17474,17 @@ const getRowsForCurrentTab = () => {
                         <button
                           type="button"
                           className="serial-cost-component"
-                          onClick={() =>
+                          onClick={() => {
+                            if (costDetailsType === "inDrone") {
+                              openInDroneCostDetails(sourceRow);
+                              return;
+                            }
+
                             openCostDetails(
                               costDetailsType,
                               sourceRow,
-                            )
-                          }
+                            );
+                          }}
                         >
                           View Details
                         </button>
@@ -18593,7 +18635,7 @@ const getRowsForCurrentTab = () => {
                     <button
                       type="button"
                       className="serial-cost-component"
-                      onClick={() => openCostDetails("inDrone", row)}
+                      onClick={() => openInDroneCostDetails(row)}
                     >
                       View Details
                     </button>
