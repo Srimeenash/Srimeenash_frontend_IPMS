@@ -237,6 +237,22 @@ const LOGIN_STYLES = String.raw`
   font-weight: 760;
 }
 
+.ipms-login-v2__rotating-title {
+  animation: heroTextChange .45s ease;
+}
+
+@keyframes heroTextChange {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .ipms-login-v2__copy p {
   margin: 18px 0 0;
   max-width: 500px;
@@ -645,6 +661,13 @@ function redirectByRole(role, navigate) {
 }
 
 
+const HERO_MESSAGES = [
+  "Control every material movement from one workspace.",
+  "Track inventory with complete visibility.",
+  "Manage procurement from request to receipt.",
+  "Keep every component traceable and connected.",
+];
+
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -652,6 +675,7 @@ export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [pointer, setPointer] = useState({ x: 52, y: 44 });
+  const [heroMessageIndex, setHeroMessageIndex] = useState(0);
 
   const [loginStep, setLoginStep] = useState("credentials");
   const [verificationId, setVerificationId] = useState("");
@@ -671,6 +695,17 @@ export default function LoginPage() {
     }),
     [pointer],
   );
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setHeroMessageIndex(
+        (current) =>
+          (current + 1) % HERO_MESSAGES.length,
+      );
+    }, 2000);
+
+    return () => window.clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     if (loginStep !== "otp") return undefined;
@@ -932,9 +967,11 @@ export default function LoginPage() {
                 Intelligent Operations
               </span>
 
-              <h1>
-                Control every material movement
-                from one workspace.
+              <h1
+                key={heroMessageIndex}
+                className="ipms-login-v2__rotating-title"
+              >
+                {HERO_MESSAGES[heroMessageIndex]}
               </h1>
 
               <p>

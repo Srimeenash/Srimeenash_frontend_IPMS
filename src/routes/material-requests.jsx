@@ -763,6 +763,8 @@ function MaterialRequestsPage() {
   const [showBomModal, setShowBomModal] = useState(false);
   const [bomDetails, setBomDetails] = useState(null);
   const [rdDetails, setRdDetails] = useState(null);
+  const [showPrintScopeDialog, setShowPrintScopeDialog] = useState(false);
+  const [customBomPrintScope, setCustomBomPrintScope] = useState("all");
 
   /*
    * Type-details popup category accordion.
@@ -6741,9 +6743,12 @@ const canRequestApproval = (request) => {
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#039;");
 
-  const buildMrDetailsPrintableHtml = () => {
-    const detailRows =
-      getDetailPrintRows();
+  const buildMrDetailsPrintableHtml = (scope = "all") => {
+    const changedOnly = bomDetails?.is_custom_bom && scope === "changed";
+    const detailRows = getDetailPrintRows().filter(
+      (item) =>
+        !changedOnly || item?._audit_edited === true || item?._audit_deleted === true,
+    );
 
     const detailRequest =
       bomDetails?.request ||
@@ -7175,10 +7180,18 @@ const canRequestApproval = (request) => {
                   "-"
               )}</div>
             </div>
+            ${bomDetails?.is_custom_bom ? `
+              <div class="meta-box">
+                <div class="meta-label">Print Scope</div>
+                <div class="meta-value">${changedOnly
+                  ? "Edited and deleted line items"
+                  : "All BOM line items"}</div>
+              </div>
+            ` : ""}
           </div>
 
           <div class="legend">
-            <span>Unchanged / New</span>
+            ${changedOnly ? "" : "<span>Unchanged / New</span>"}
             <span class="edited">Edited</span>
             <span class="deleted">Deleted</span>
           </div>
@@ -7207,9 +7220,20 @@ const canRequestApproval = (request) => {
     `;
   };
 
-  const printMrDetails = () => {
+  const printMrDetails = (scope = "all") => {
+    if (
+      bomDetails?.is_custom_bom &&
+      scope === "changed" &&
+      !getDetailPrintRows().some(
+        (item) => item?._audit_edited === true || item?._audit_deleted === true,
+      )
+    ) {
+      alert("There are no edited or deleted BOM line items to print.");
+      return false;
+    }
+
     const printableHtml =
-      buildMrDetailsPrintableHtml();
+      buildMrDetailsPrintableHtml(scope);
 
     const printWindow =
       window.open(
@@ -7222,7 +7246,7 @@ const canRequestApproval = (request) => {
       alert(
         "Please allow popups to print MR details.",
       );
-      return;
+      return false;
     }
 
     printWindow.document.open();
@@ -7236,6 +7260,7 @@ const canRequestApproval = (request) => {
     window.setTimeout(() => {
       printWindow.print();
     }, 250);
+    return true;
   };
 
   const escapeExcelXml = (value) =>
@@ -8879,7 +8904,14 @@ columns={[...([
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      onClick={printMrDetails}
+                      onClick={() => {
+                        if (bomDetails?.is_custom_bom) {
+                          setCustomBomPrintScope("all");
+                          setShowPrintScopeDialog(true);
+                        } else {
+                          printMrDetails("all");
+                        }
+                      }}
                       className="inline-flex items-center rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
                     >
                       Print
@@ -9538,6 +9570,98 @@ columns={[...([
                   </div>
                 );
               })()}
+            </div>
+          </div>
+        </div>
+      )}
+      {showBomModal && showPrintScopeDialog && bomDetails?.is_custom_bom && (
+        <div
+          className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setShowPrintScopeDialog(false);
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="custom-bom-print-title"
+            className="w-full max-w-lg rounded-2xl border border-border bg-background p-6 text-foreground shadow-2xl"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <h3 id="custom-bom-print-title" className="text-lg font-semibold">
+              Print Custom BOM
+            </h3>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Which BOM line items would you like to print?
+            </p>
+
+            <div className="mt-5 space-y-3">
+              <label className="flex cursor-pointer gap-3 rounded-xl border border-border p-4 hover:bg-muted/50">
+                <input
+                  type="radio"
+                  name="custom-bom-print-scope"
+                  value="all"
+                  checked={customBomPrintScope === "all"}
+                  onChange={() => setCustomBomPrintScope("all")}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="block text-sm font-semibold">All BOM line items</span>
+                  <span className="mt-1 block text-xs text-muted-foreground">
+                    Print every item, including unchanged, new, edited, and deleted lines.
+                  </span>
+                </span>
+              </label>
+
+              <label className="flex cursor-pointer gap-3 rounded-xl border border-border p-4 hover:bg-muted/50">
+                <input
+                  type="radio"
+                  name="custom-bom-print-scope"
+                  value="changed"
+                  checked={customBomPrintScope === "changed"}
+                  onChange={() => setCustomBomPrintScope("changed")}
+                  disabled={!bomDetails.items?.some(
+                    (item) => item?._audit_edited === true || item?._audit_deleted === true,
+                  )}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="block text-sm font-semibold">Edited and deleted line items only</span>
+                  <span className="mt-1 block text-xs text-muted-foreground">
+                    Exclude unchanged and newly added lines.
+                  </span>
+                </span>
+              </label>
+              {!bomDetails.items?.some(
+                (item) => item?._audit_edited === true || item?._audit_deleted === true,
+              ) && (
+                <p className="text-sm text-amber-700 dark:text-amber-300">
+                  No edited or deleted items are available for this request.
+                </p>
+              )}
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowPrintScopeDialog(false)}
+                className="rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-muted"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (printMrDetails(customBomPrintScope)) {
+                    setShowPrintScopeDialog(false);
+                  }
+                }}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
+              >
+                Print
+              </button>
             </div>
           </div>
         </div>

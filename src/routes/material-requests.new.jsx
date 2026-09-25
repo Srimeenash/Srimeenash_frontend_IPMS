@@ -141,6 +141,16 @@ const getRequiredDateCutoffMessage = (date = new Date()) => {
   );
 };
 
+// Some existing BOM items store the string "None" for an empty remark.
+// Keep those fields blank so users must enter a real change reason.
+const normalizeBomRemark = (value) => {
+  if (value == null) return "";
+  const remark = String(value);
+  return ["none", "null"].includes(remark.trim().toLowerCase())
+    ? ""
+    : remark;
+};
+
 const createEmptyRequestItem = () => ({
   component: "",
   category: "",
@@ -1171,9 +1181,26 @@ const returnableMaxDate =
   const [materialRequestIdLoading, setMaterialRequestIdLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submitLockRef = useRef(false);
+  const pendingRemarkRowRef = useRef(null);
 
+  // Wait for validation errors and the relevant category to render before scrolling.
+  useEffect(() => {
+    const rowIndex = pendingRemarkRowRef.current;
+    if (rowIndex === null || !errors[`row_remarks_${rowIndex}`]) return;
 
-  
+    const row = document.getElementById(`bom-row-${rowIndex}`);
+    if (!row) return;
+
+    pendingRemarkRowRef.current = null;
+    const remarksField = row.querySelector("textarea");
+    (remarksField || row).scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+      inline: "nearest",
+    });
+    remarksField?.focus({ preventScroll: true });
+  }, [errors, expandedBomCategories]);
+
 async function handleComponentChange(e) {
   const { name, value } = e.target;
 
@@ -2308,6 +2335,7 @@ const mapBomRows = (bomData) =>
       price,
       tax,
       total,
+      remarks: normalizeBomRemark(item.remarks),
 
       // Customized-BOM audit UI state.
       _is_new: false,
@@ -2433,7 +2461,7 @@ const buildBomItemPayload = (row) => {
 
     vendor: row.vendor || "",
 
-    remarks: row.remarks || "",
+    remarks: normalizeBomRemark(row.remarks).trim(),
   };
 };
 
@@ -2793,7 +2821,7 @@ async function handleSubmit(e) {
 
       if (
         needsChangeReason &&
-        !String(row?.remarks || "").trim()
+        !normalizeBomRemark(row?.remarks).trim()
       ) {
         newErrors[`row_remarks_${index}`] =
           row?._is_deleted
@@ -2843,6 +2871,19 @@ async function handleSubmit(e) {
 
   if (Object.keys(newErrors).length) {
     setErrors(newErrors);
+
+    // Take the user to the first edited/deleted BOM row missing a remark.
+    const missingRemarkRowIndex = (rows || []).findIndex(
+      (_, index) => Boolean(newErrors[`row_remarks_${index}`]),
+    );
+    if (requestType === "BOM" && missingRemarkRowIndex !== -1) {
+      pendingRemarkRowRef.current = missingRemarkRowIndex;
+      const category = normalizeBomCategory(rows[missingRemarkRowIndex]?.category);
+      setExpandedBomCategories((previous) =>
+        previous.includes(category) ? previous : [...previous, category],
+      );
+      return;
+    }
 
     const nowForCutoff = new Date();
     const todayForCutoff =
@@ -3085,6 +3126,25 @@ async function handleSubmit(e) {
     remarks: form.remarks,
 
     bom_items: bomItemsForPayload,
+    // Archive the full Custom BOM with source-row identities and deletion reasons.
+    // Deleted rows are excluded from bom_items, so the project review snapshot
+    // must carry them separately in the same MR creation transaction.
+    custom_bom_items:
+      requestType === "BOM" && customizedBom
+        ? rows.map((row) => ({
+            source_bom_item_id: row._is_new ? null : row.id ?? null,
+            change_type: row._is_deleted
+              ? "DELETED"
+              : row._is_new
+                ? "NEW"
+                : row._is_edited
+                  ? "EDITED"
+                  : "UNCHANGED",
+            component: row._is_deleted ? null : Number(buildBomItemPayload(row).component),
+            quantity: row._is_deleted ? 0 : Number(row.quantity || 0),
+            remarks: normalizeBomRemark(row.remarks).trim(),
+          }))
+        : [],
     rd_items: rdItemsForPayload,
     request_items: requestItemsForPayload,
 
@@ -4652,6 +4712,7 @@ async function handleSubmit(e) {
                         return (
                           <tr
                             key={`bom-row-${i}`}
+                            id={`bom-row-${i}`}
                             className={rowClassName}
                           >
                             <td className="px-3 py-2">
@@ -4896,7 +4957,7 @@ async function handleSubmit(e) {
                             {customizedBom && (
                               <td className="px-3 py-2">
                                 <Textarea
-                                  value={row.remarks || ""}
+                                  value={normalizeBomRemark(row.remarks)}
                                   placeholder={
                                     isDeleted
                                       ? "Required: reason for deletion"
