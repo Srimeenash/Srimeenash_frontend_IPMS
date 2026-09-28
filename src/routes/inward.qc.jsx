@@ -26,7 +26,9 @@ const [selectedRows, setSelectedRows] = useState([]);
 const [showQcQuestions, setShowQcQuestions] = useState(false);
 const [showCompletionConfirm, setShowCompletionConfirm] = useState(false);
 const [showAllPassConfirm, setShowAllPassConfirm] = useState(false);
-const [qcCompleted, setQcCompleted] = useState(false);
+  const [qcCompleted, setQcCompleted] = useState(false);
+  const [rackNo, setRackNo] = useState("");
+  const [boxNo, setBoxNo] = useState("");
 
 
 const handleRemarkChange = (index, value) => {
@@ -523,6 +525,8 @@ async function loadEntry() {
     };
 
     setInwardEntry(normalizedEntry);
+    setRackNo(normalizedEntry.rack_no || "");
+    setBoxNo(normalizedEntry.box_no || "");
     setQcRows(buildRows(normalizedEntry));
     setQcCompleted(isQcComplete(normalizedEntry));
   } catch (err) {
@@ -734,6 +738,8 @@ function handleQuestionChange(id, value) {
     const payload = {
       passedRows,
       failedRows,
+      rack_no: rackNo.trim(),
+      box_no: boxNo.trim(),
       qcQuestions,
       purchase_order:
         inwardEntry.purchase_order,
@@ -793,6 +799,8 @@ function handleQuestionChange(id, value) {
         qc_failed_rows:
           result?.failedRows ||
           failedRows,
+        rack_no: result?.rack_no ?? rackNo.trim(),
+        box_no: result?.box_no ?? boxNo.trim(),
       };
 
       setInwardEntry(updatedEntry);
@@ -948,6 +956,32 @@ left={
                 <div className="mt-2 text-sm font-medium text-foreground">{item.value ?? "-"}</div>
               </div>
             ))}
+          </div>
+          <div className="mb-6 grid gap-4 rounded-2xl border border-border bg-secondary/20 p-4 sm:grid-cols-2">
+            <label className="text-sm font-medium text-foreground">
+              Rack No <span className="text-xs font-normal text-muted-foreground">(optional)</span>
+              <input
+                type="text"
+                maxLength={100}
+                value={rackNo}
+                onChange={(event) => setRackNo(event.target.value)}
+                disabled={!canManageInward || qcCompleted}
+                placeholder="Enter rack number"
+                className="mt-2 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="text-sm font-medium text-foreground">
+              Box No <span className="text-xs font-normal text-muted-foreground">(optional)</span>
+              <input
+                type="text"
+                maxLength={100}
+                value={boxNo}
+                onChange={(event) => setBoxNo(event.target.value)}
+                disabled={!canManageInward || qcCompleted}
+                placeholder="Enter box number"
+                className="mt-2 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
+              />
+            </label>
           </div>
 {showQcQuestions && (
   <div className="mb-6 rounded-2xl border p-4 bg-secondary/20">

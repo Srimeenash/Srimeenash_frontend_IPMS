@@ -648,6 +648,10 @@ export default function InventoryPage() {
     mode: "instore",
     details: [],
   });
+  const [editingStockLocationId, setEditingStockLocationId] = useState(null);
+  const [stockLocationDraft, setStockLocationDraft] = useState({ rack_no: "", box_no: "" });
+  const [savingStockLocation, setSavingStockLocation] = useState(false);
+  const [stockLocationError, setStockLocationError] = useState("");
   const [projectQcSerialModal, setProjectQcSerialModal] = useState({
     open: false,
     row: null,
@@ -1026,7 +1030,6 @@ export default function InventoryPage() {
         componentMaster?.component_id ||
         componentMaster?.component_code ||
         componentMaster?.code ||
-        componentMaster?.id ||
         "-",
       componentName:
         resolveInventoryComponentName(
@@ -1057,10 +1060,7 @@ export default function InventoryPage() {
     };
   };
 
-  /*
-   * IN STORE:
-   * Keep the existing Component Details popup exactly as requested.
-   */
+  /* In Store shows the component's human-readable ID. */
   const openComponentSpecificationModal = (row) => {
     const componentMaster =
       findInventoryComponentMaster(
@@ -1068,20 +1068,21 @@ export default function InventoryPage() {
         components,
       );
 
+    setEditingStockLocationId(null);
+    setStockLocationError("");
     setComponentSpecificationModal({
       open: true,
       mode: "instore",
       details: [],
       row: {
         ...row,
-        component_name:
-          row?.component_name ||
-          resolveInventoryComponentName(
+        component_id:
+          resolveInventoryComponentCode(
             row,
             components,
           ) ||
-          componentMaster?.name ||
-          componentMaster?.component_name ||
+          componentMaster?.component_id ||
+          componentMaster?.component_code ||
           "-",
         category:
           resolveInventoryCategory(
@@ -1177,8 +1178,7 @@ export default function InventoryPage() {
 
   /*
    * PROJECT INVENTORY:
-   * Keep Component / HSN / Specification / Category out of the main table.
-   * Show all four when Specification is clicked.
+   * Show the Component ID in the table and popup alongside its specification.
    */
   const openProjectInventorySpecificationModal = (row) => {
     setComponentSpecificationModal({
@@ -1193,13 +1193,52 @@ export default function InventoryPage() {
     });
   };
 
-  const closeComponentSpecificationModal = () =>
+  const closeComponentSpecificationModal = () => {
+    if (savingStockLocation) return;
+    setEditingStockLocationId(null);
+    setStockLocationError("");
     setComponentSpecificationModal({
       open: false,
       row: null,
       mode: "instore",
       details: [],
     });
+  };
+
+  const saveStockLocation = async (stockId) => {
+    if (!canManageInventory || stockId == null) return;
+    setSavingStockLocation(true);
+    setStockLocationError("");
+    try {
+      const updated = await fetchAuthenticatedJson(
+        `${config.baseURL}/inventory/inventory/${encodeURIComponent(stockId)}/location/`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            rack_no: stockLocationDraft.rack_no.trim(),
+            box_no: stockLocationDraft.box_no.trim(),
+          }),
+        },
+      );
+      setComponentSpecificationModal((previous) => ({
+        ...previous,
+        row: {
+          ...previous.row,
+          stockLocations: (previous.row?.stockLocations || []).map((stock) =>
+            String(stock.id) === String(stockId)
+              ? { ...stock, rack_no: updated.rack_no, box_no: updated.box_no }
+              : stock,
+          ),
+        },
+      }));
+      setEditingStockLocationId(null);
+      await loadInventoryData();
+    } catch (error) {
+      setStockLocationError(error.message || "Unable to save stock location.");
+    } finally {
+      setSavingStockLocation(false);
+    }
+  };
 
 
   const closeSerialsModal = () => setSerialModal({ open: false, row: null, serials: [], selected: [] });
@@ -3998,6 +4037,11 @@ export default function InventoryPage() {
     item,
     componentList = [],
   ) => {
+    // Legacy stock must show the Comp ID from the source workbook. The
+    // category-coded Component master ID is an internal reference here.
+    const sourceId = String(item?.source_component_id || "").trim();
+    if (sourceId) return sourceId;
+
     const componentMaster =
       findInventoryComponentMaster(
         item,
@@ -4022,6 +4066,8 @@ export default function InventoryPage() {
       item?.componentCode,
       item?.component_code_display,
       item?.component_id_display,
+      item?.component_id,
+      item?.componentId,
       details?.component_id,
       details?.component_code,
       details?.code,
@@ -4045,7 +4091,20 @@ export default function InventoryPage() {
       }
     }
 
-    return "";
+    // Older stock rows sometimes put the component ID in the name field.
+    // Use it only when it has the category-coded ID format, never as a name.
+    const legacyCode = [
+      item?.component_name,
+      item?.componentName,
+      item?.component,
+      details?.component_name,
+      details?.name,
+    ]
+      .filter((value) => typeof value === "string")
+      .map((value) => value.trim().match(/^([a-z]{1,8}[_-]\d+)(?:\s+-\s+.*)?$/i)?.[1])
+      .find(Boolean);
+
+    return legacyCode || "";
   };
 
   const normalizeComponentNameForGrouping = (value, code = "") => {
@@ -4214,6 +4273,7 @@ export default function InventoryPage() {
     const componentDetails = item.component_details || item.component_obj || item.component_data || item.componentInfo || item.component_info || null;
     const candidates = [
       item.specifications,
+      item.source_specification,
       item.specification,
       item.component_specifications,
       item.componentSpecification,
@@ -4227,7 +4287,7 @@ export default function InventoryPage() {
 
     for (const candidate of candidates) {
       const resolved = resolveInventoryComponentValue(candidate);
-      if (resolved) return resolved;
+      if (resolved && resolved !== "-" && resolved.toUpperCase() !== "N/A") return resolved;
     }
 
     const componentId = item.component_id || item.componentId || item.component_code || item.componentCode || item.component || item.id;
@@ -4445,6 +4505,11 @@ return [
 
   const grouped = items.reduce((acc, item) => {
     const qty = Number(item.qty ?? item.quantity ?? item.passed_quantity ?? 1);
+    const originalQty = item.source_original_quantity;
+    const recordedQty = originalQty !== null && originalQty !== undefined && originalQty !== "" &&
+      Number.isFinite(Number(originalQty)) && Number(originalQty) >= 0
+      ? Number(originalQty)
+      : qty;
     const unitPrice = Number(item.price ?? item.unit_price ?? 0);
     const rawTotalPrice = Number(item.totalPrice ?? item.total_price ?? 0);
     const totalPrice = rawTotalPrice || (unitPrice * qty);
@@ -4629,14 +4694,24 @@ return [
         vendor,
         po,
         date,
+        stockLocations: [],
         qty: 0,
+        recorded_qty: 0,
         price: unitPrice,
         totalPrice: 0,
       };
     }
 
     acc[groupKey].qty += qty;
+    acc[groupKey].recorded_qty += recordedQty;
     acc[groupKey].totalPrice += totalPrice;
+    const stockId = item.backendId ?? item.id ?? item.pk ?? item.inventory_id ?? null;
+    acc[groupKey].stockLocations.push({
+      id: item.source !== "inward" && /^\d+$/.test(String(stockId)) ? stockId : null,
+      code: item.code || item.inventory_code || "Stock record",
+      rack_no: item.rack_no || "",
+      box_no: item.box_no || "",
+    });
 
     const additionalBackendIds = [
       item.backendId,
@@ -8127,6 +8202,7 @@ serials_list: manualSerials.length ? manualSerials : buildManualInventorySerials
       const identity = buildInventoryPersistenceKey(item);
       const existing = acc.get(identity);
       const qty = Number(item.qty ?? item.quantity ?? item.passed_quantity ?? 1);
+      const recordedQty = Number(item.recorded_qty ?? qty);
       const unitPrice = Number(item.price ?? item.unit_price ?? 0);
       const rawTotalPrice = Number(item.totalPrice ?? item.total_price ?? 0);
       const totalPrice = rawTotalPrice || (unitPrice * qty);
@@ -8136,6 +8212,7 @@ serials_list: manualSerials.length ? manualSerials : buildManualInventorySerials
           ...item,
           qty,
           quantity: qty,
+          recorded_qty: recordedQty,
           price: unitPrice,
           totalPrice,
         });
@@ -8144,6 +8221,7 @@ serials_list: manualSerials.length ? manualSerials : buildManualInventorySerials
 
       existing.qty = Number(existing.qty ?? existing.quantity ?? 0) + qty;
       existing.quantity = existing.qty;
+      existing.recorded_qty = Number(existing.recorded_qty ?? 0) + recordedQty;
       existing.totalPrice = Number(existing.totalPrice ?? 0) + totalPrice;
       existing.price = existing.qty > 0 ? existing.totalPrice / existing.qty : unitPrice || existing.price;
 
@@ -11393,13 +11471,14 @@ let filtered = qcInventory.filter(
   if (!q) return filtered;
 
   return filtered.filter((item) =>
-    [item.code, item.component, item.vendor]
+    [item.code, item.component, item.component_code,
+      resolveInventoryComponentCode(item, components), item.vendor]
       .filter(Boolean)
       .some((value) =>
         String(value).toLowerCase().includes(q)
       )
   );
-}, [qcInventory, search, selectedCategory]);
+}, [qcInventory, search, selectedCategory, components]);
 
 const outwardInventoryComponentOptions = useMemo(() => {
   const physicalByComponent = new Map();
@@ -11944,6 +12023,7 @@ const visibleProjectInventory =
         item.component,
         item.component_name,
         item.component_code,
+        resolveInventoryComponentCode(item, components),
         ...(Array.isArray(
           item.project_po_numbers,
         )
@@ -13081,6 +13161,14 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
         0,
     );
 
+  const getInventoryRecordedQuantity = (row = {}) => {
+    const recorded = Number(row?.recorded_qty);
+    return row?.recorded_qty !== null && row?.recorded_qty !== undefined &&
+      Number.isFinite(recorded) && recorded >= 0
+      ? recorded
+      : getInventoryRowQuantity(row);
+  };
+
   const getCostDetailsTotal = (row = {}) => {
     /*
      * The backend SerialCostDetails serializer exposes component totals as:
@@ -13637,6 +13725,14 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
             ),
           0,
         ),
+    [qcInventory],
+  );
+
+  const inStoreRecordedQuantity = useMemo(
+    () => (Array.isArray(qcInventory) ? qcInventory : [])
+      .filter((item) => !String(item?.source_mr_number || item?.sourceMrNumber || "").trim() &&
+        String(item?.inventory_scope || item?.inventoryScope || "").trim().toLowerCase() !== "project")
+      .reduce((total, item) => total + getInventoryRecordedQuantity(item), 0),
     [qcInventory],
   );
 
@@ -15034,15 +15130,6 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
                 components,
               ) ||
               item?.component_code ||
-              item?.code ||
-              "-",
-            component:
-              resolveInventoryComponentName(
-                item,
-                components,
-              ) ||
-              item?.component ||
-              item?.component_name ||
               "-",
             category:
               item?.category ||
@@ -15215,14 +15302,6 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
             ) ||
             item?.component_code ||
             "-",
-          component:
-            resolveInventoryComponentName(
-              item,
-              components,
-            ) ||
-            item?.component_name ||
-            item?.component ||
-            "-",
           category:
             item?.category ||
             componentMaster?.category ||
@@ -15285,7 +15364,7 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
         downloadExcelWorkbook(
           `In_Store_Inventory_${date}`,
           "In Store",
-          inventoryExportColumns,
+          inventoryExportColumns.filter((column) => column.value !== "component"),
           getInStoreExportRows(),
         );
         return;
@@ -15295,7 +15374,7 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
         downloadExcelWorkbook(
           `Project_Inventory_${date}`,
           "Project Inventory",
-          inventoryExportColumns,
+          inventoryExportColumns.filter((column) => column.value !== "component"),
           getProjectInventoryExportRows(),
         );
         return;
@@ -17564,11 +17643,11 @@ const getRowsForCurrentTab = () => {
                   In Store Inventory
                 </div>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  Current physical component stock available in the In Store inventory.
+                  Qty includes the original Excel quantity for imported stock. Cost reflects current In Store stock.
                 </p>
                 <div className="mt-3 flex flex-wrap gap-4 text-xs text-muted-foreground">
                   <span>
-                    Qty: <strong className="text-foreground">{inStoreQuantity}</strong>
+                    Qty: <strong className="text-foreground">{inStoreRecordedQuantity}</strong>
                   </span>
                   <span>
                     Cost: <strong className="text-foreground">{formatCurrency(inStoreCost)}</strong>
@@ -17589,9 +17668,11 @@ const getRowsForCurrentTab = () => {
                    render: (_, index) => index + 1,
                  },
                  {
-                   key: "component",
-                   header: "Component",
-                   render: (row) => row.component || row.component_name || row.name || row.productName || row.product_name || "-",
+                   key: "component_code",
+                   header: "Component ID",
+                   render: (row) => resolveInventoryComponentCode(row, components) || "-",
+                   sortValue: (row) => resolveInventoryComponentCode(row, components) || "",
+                   filterValue: (row) => resolveInventoryComponentCode(row, components) || "",
                  },
 {
   key: "specifications",
@@ -17624,13 +17705,14 @@ const getRowsForCurrentTab = () => {
                   {
                     key: "qty",
                     header: "Qty",
+                    sortValue: (row) => getInventoryRecordedQuantity(row),
                     render: (row) => (
                       <button
                         type="button"
                         onClick={() => openSerialsModal(row)}
                         className="inline-flex items-center justify-center rounded-full border border-border bg-card px-3 py-1 text-sm font-semibold text-foreground transition hover:border-primary hover:text-primary"
                       >
-                        {row.qty ?? row.quantity ?? 1}
+                        {getInventoryRecordedQuantity(row)}
                       </button>
                     ),
                   },
@@ -17740,6 +17822,14 @@ const getRowsForCurrentTab = () => {
   },
 
   {
+    key: "component_code",
+    header: "Component ID",
+    render: (row) => resolveInventoryComponentCode(row, components) || "-",
+    sortValue: (row) => resolveInventoryComponentCode(row, components) || "",
+    filterValue: (row) => resolveInventoryComponentCode(row, components) || "",
+  },
+
+  {
     key: "specifications",
     header: "Specification",
     render: (row) => {
@@ -17763,7 +17853,7 @@ const getRowsForCurrentTab = () => {
             )
           }
           className="max-w-[240px] text-left font-semibold text-primary underline-offset-2 hover:underline"
-          title="View Component, HSN No, Specification and Category"
+          title="View Component ID, HSN No, Specification and Category"
         >
           {specification !== "-"
             ? specification
@@ -18320,7 +18410,7 @@ const getRowsForCurrentTab = () => {
 
       {componentSpecificationModal.open && componentSpecificationModal.row && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg rounded-2xl border border-border bg-white shadow-2xl dark:bg-slate-950">
+          <div className={`w-full rounded-2xl border border-border bg-white shadow-2xl dark:bg-slate-950 ${componentSpecificationModal.mode === "instore" ? "max-w-2xl max-h-[90vh] overflow-y-auto" : "max-w-lg"}`}>
             <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-5">
               <div>
                 <h3 className="text-lg font-semibold text-foreground">Component Details</h3>
@@ -18336,21 +18426,83 @@ const getRowsForCurrentTab = () => {
               </button>
             </div>
             {componentSpecificationModal.mode === "instore" ? (
-              /*
-               * IN STORE POPUP - intentionally unchanged.
-               */
-              <div className="grid gap-4 px-6 py-5 sm:grid-cols-2">
-                {[
-                  ["Component Name", componentSpecificationModal.row.component_name],
-                  ["Category", componentSpecificationModal.row.category],
-                  ["Component Type", componentSpecificationModal.row.component_type],
-                  ["Specification", componentSpecificationModal.row.specifications],
-                ].map(([label, value]) => (
-                  <div key={label} className="rounded-xl border border-border bg-muted/30 p-3">
-                    <div className="text-xs font-medium text-muted-foreground">{label}</div>
-                    <div className="mt-1 break-words text-sm font-semibold text-foreground">{value || "-"}</div>
+              <div className="px-6 py-5">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {[
+                    ["Component ID", componentSpecificationModal.row.component_id],
+                    ["Category", componentSpecificationModal.row.category],
+                    ["Component Type", componentSpecificationModal.row.component_type],
+                    ["Specification", componentSpecificationModal.row.specifications],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-xl border border-border bg-muted/30 p-3">
+                      <div className="text-xs font-medium text-muted-foreground">{label}</div>
+                      <div className="mt-1 break-words text-sm font-semibold text-foreground">{value || "-"}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-6 border-t border-border pt-5">
+                  <h4 className="text-sm font-semibold text-foreground">Stock locations</h4>
+                  <p className="mt-1 text-xs text-muted-foreground">Each stock batch can have its own rack and box.</p>
+                  <div className="mt-4 space-y-3">
+                    {(componentSpecificationModal.row.stockLocations || []).map((stock, index) => (
+                      <div key={`${stock.id ?? stock.code}-${index}`} className="rounded-xl border border-border bg-muted/20 p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-sm font-semibold text-foreground">{stock.code}</span>
+                          {canManageInventory && stock.id != null && String(editingStockLocationId) !== String(stock.id) && (
+                            <button
+                              type="button"
+                              className="text-sm font-semibold text-primary hover:underline"
+                              onClick={() => {
+                                setEditingStockLocationId(stock.id);
+                                setStockLocationDraft({ rack_no: stock.rack_no || "", box_no: stock.box_no || "" });
+                                setStockLocationError("");
+                              }}
+                            >
+                              Edit
+                            </button>
+                          )}
+                        </div>
+                        {stock.id != null && String(editingStockLocationId) === String(stock.id) ? (
+                          <div className="mt-4 space-y-3">
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              {[["rack_no", "Rack No"], ["box_no", "Box No"]].map(([field, label]) => (
+                                <label key={field} className="text-xs font-medium text-foreground">
+                                  {label} (optional)
+                                  <input
+                                    type="text"
+                                    maxLength={100}
+                                    value={stockLocationDraft[field]}
+                                    onChange={(event) => setStockLocationDraft((previous) => ({ ...previous, [field]: event.target.value }))}
+                                    className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
+                                    placeholder={`Enter ${label.toLowerCase()}`}
+                                  />
+                                </label>
+                              ))}
+                            </div>
+                            {stockLocationError && <p className="text-xs text-red-600" role="alert">{stockLocationError}</p>}
+                            <div className="flex gap-3">
+                              <button type="button" disabled={savingStockLocation} onClick={() => void saveStockLocation(stock.id)} className="rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground disabled:opacity-50">
+                                {savingStockLocation ? "Saving..." : "Save location"}
+                              </button>
+                              <button type="button" disabled={savingStockLocation} onClick={() => { setEditingStockLocationId(null); setStockLocationError(""); }} className="rounded-lg border border-border px-4 py-2 text-xs font-medium">
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                            {[["Rack No", stock.rack_no], ["Box No", stock.box_no]].map(([label, value]) => (
+                              <div key={label} className="rounded-lg border border-border bg-background px-3 py-2">
+                                <div className="text-xs text-muted-foreground">{label}</div>
+                                <div className="mt-1 text-sm font-medium text-foreground">{value || "—"}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
                   </div>
-                ))}
+                </div>
               </div>
             ) : (
               <div className="px-6 py-5">
@@ -18359,9 +18511,7 @@ const getRowsForCurrentTab = () => {
                     <thead className="bg-muted/40">
                       <tr>
                         <th className="px-4 py-3 text-left font-semibold text-foreground">
-                          {componentSpecificationModal.mode === "overall"
-                            ? "Component ID"
-                            : "Component"}
+                          Component ID
                         </th>
                         {componentSpecificationModal.mode === "overall" ? (
                           <>
@@ -18395,9 +18545,7 @@ const getRowsForCurrentTab = () => {
                         (detail, index) => (
                           <tr key={`component-specification-${index}`}>
                             <td className="px-4 py-3 font-semibold text-foreground">
-                              {componentSpecificationModal.mode === "overall"
-                                ? detail.componentId
-                                : detail.componentName}
+                              {detail.componentId || "-"}
                             </td>
                             {componentSpecificationModal.mode === "overall" ? (
                               <>
@@ -21847,9 +21995,8 @@ const getRowsForCurrentTab = () => {
               projectQcSerialModal.row?.material_request_id ||
               "MR"}
             {" · "}
-            {projectQcSerialModal.row?.component ||
-              projectQcSerialModal.row?.component_name ||
-              "Component"}
+            {resolveInventoryComponentCode(projectQcSerialModal.row, components) ||
+              "Component ID unavailable"}
           </p>
         </div>
 

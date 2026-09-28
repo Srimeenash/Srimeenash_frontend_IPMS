@@ -34,6 +34,10 @@ export default function InwardDetailPage() {
   const [vendors, setVendors] = useState([]);
   const [purchaseOrders, setPurchaseOrders] = useState([]);
   const [components, setComponents] = useState([]);
+  const [editingLocation, setEditingLocation] = useState(false);
+  const [savingLocation, setSavingLocation] = useState(false);
+  const [locationError, setLocationError] = useState("");
+  const [locationDraft, setLocationDraft] = useState({ rack_no: "", box_no: "" });
 
   useEffect(() => {
     loadData();
@@ -187,6 +191,7 @@ async function loadInwardEntry(
     };
 
     setInwardEntry(mapped);
+    setLocationDraft({ rack_no: data.rack_no || "", box_no: data.box_no || "" });
 
     setLineItems(
       Array.isArray(data.line_items) &&
@@ -376,6 +381,31 @@ updated[idx].grandTotal = (subtotal + gstAmount).toFixed(2);
     }
   }
 
+  async function handleSaveLocation() {
+    if (!canManageInward || !inwardEntry) return;
+    setSavingLocation(true);
+    setLocationError("");
+    try {
+      const updated = await fetchAuthenticatedJson(
+        `${config.baseURL || ""}/inward/${grnId}/`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            rack_no: locationDraft.rack_no.trim(),
+            box_no: locationDraft.box_no.trim(),
+          }),
+        }
+      );
+      setInwardEntry((previous) => ({ ...previous, ...updated }));
+      setLocationDraft({ rack_no: updated.rack_no || "", box_no: updated.box_no || "" });
+      setEditingLocation(false);
+    } catch (error) {
+      setLocationError(error.message || "Unable to save storage location.");
+    } finally {
+      setSavingLocation(false);
+    }
+  }
+
   if (loading) {
     return (
       <PageShell>
@@ -433,6 +463,69 @@ updated[idx].grandTotal = (subtotal + gstAmount).toFixed(2);
                 <div className="mt-2 text-sm font-medium text-foreground">{item.value || "-"}</div>
               </div>
             ))}
+          </div>
+          <div className="mt-6 border-t border-border pt-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">Storage location</h3>
+                <p className="mt-1 text-xs text-muted-foreground">Optional rack and box for this inward batch.</p>
+              </div>
+              {canManageInward && !editingLocation && (
+                <button
+                  type="button"
+                  onClick={() => { setLocationError(""); setEditingLocation(true); }}
+                  className="rounded-xl border border-primary px-4 py-2 text-sm font-semibold text-primary hover:bg-primary/5"
+                >
+                  Edit location
+                </button>
+              )}
+            </div>
+            {editingLocation ? (
+              <div className="mt-4 space-y-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {[["rack_no", "Rack No"], ["box_no", "Box No"]].map(([field, label]) => (
+                    <label key={field} className="text-sm font-medium text-foreground">
+                      {label} <span className="text-xs font-normal text-muted-foreground">(optional)</span>
+                      <input
+                        type="text"
+                        maxLength={100}
+                        value={locationDraft[field]}
+                        onChange={(event) => setLocationDraft((previous) => ({ ...previous, [field]: event.target.value }))}
+                        className="mt-2 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm"
+                        placeholder={`Enter ${label.toLowerCase()}`}
+                      />
+                    </label>
+                  ))}
+                </div>
+                {locationError && <p className="text-sm text-red-600" role="alert">{locationError}</p>}
+                <div className="flex gap-3">
+                  <button type="button" onClick={handleSaveLocation} disabled={savingLocation} className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50">
+                    {savingLocation ? "Saving..." : "Save location"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLocationDraft({ rack_no: inwardEntry.rack_no || "", box_no: inwardEntry.box_no || "" });
+                      setEditingLocation(false);
+                      setLocationError("");
+                    }}
+                    disabled={savingLocation}
+                    className="rounded-xl border border-border px-4 py-2 text-sm font-medium"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                {[["Rack No", inwardEntry.rack_no], ["Box No", inwardEntry.box_no]].map(([label, value]) => (
+                  <div key={label} className="rounded-xl border border-border bg-background p-4">
+                    <div className="text-xs font-medium text-muted-foreground">{label}</div>
+                    <div className="mt-1 text-sm font-semibold text-foreground">{value || "—"}</div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
