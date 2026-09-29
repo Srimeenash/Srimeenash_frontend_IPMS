@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Plus, Edit2, Trash2 } from "lucide-react";
 import { PageShell, PageHeader } from "@/components/app/PageShell";
@@ -70,6 +70,8 @@ const [
   managerRejectRemarks,
   setManagerRejectRemarks,
 ] = useState("");
+const [isManagerDecisionSaving, setIsManagerDecisionSaving] = useState(false);
+const managerDecisionLockRef = useRef(false);
 const toApiList = (data) => {
   if (Array.isArray(data)) return data;
   if (Array.isArray(data?.results)) return data.results;
@@ -1190,41 +1192,27 @@ const allItems = [...items, ...newRows];
 
 // totalCost removed — pricing is no longer displayed for BOM items
 const approveBOM = async () => {
+  if (managerDecisionLockRef.current) return;
+
   if (!bom?.id) {
     alert("BOM ID is missing.");
     return;
   }
 
+  managerDecisionLockRef.current = true;
+  setIsManagerDecisionSaving(true);
+
   try {
-    const response = await fetch(
+    const data = await fetchAuthenticatedJson(
       `${config.baseURL}/bom/bom/${bom.id}/approve/`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          approved_by:
-            loggedUser.name ||
-            loggedUser.username ||
-            loggedUser.email ||
-            "MANAGER",
-        }),
+        body: JSON.stringify({}),
       }
     );
 
-    const data = await response
-      .json()
-      .catch(() => null);
-
-    if (!response.ok) {
-      throw new Error(
-        data?.detail ||
-          "Failed to approve BOM."
-      );
-    }
-
     setBom(data);
+    window.dispatchEvent(new Event("notificationsUpdated"));
     await loadBOMDetail();
   } catch (error) {
     console.error(
@@ -1236,10 +1224,15 @@ const approveBOM = async () => {
       error.message ||
         "Failed to approve BOM."
     );
+  } finally {
+    managerDecisionLockRef.current = false;
+    setIsManagerDecisionSaving(false);
   }
 };
 
 const rejectBOM = async () => {
+  if (managerDecisionLockRef.current) return;
+
   if (!managerRejectRemarks.trim()) {
     alert("Enter manager rejection remarks.");
     return;
@@ -1250,43 +1243,24 @@ const rejectBOM = async () => {
     return;
   }
 
+  managerDecisionLockRef.current = true;
+  setIsManagerDecisionSaving(true);
+
   try {
-    const response = await fetch(
+    const data = await fetchAuthenticatedJson(
       `${config.baseURL}/bom/bom/${bom.id}/reject/`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
         body: JSON.stringify({
-          remarks:
-            managerRejectRemarks.trim(),
-
-          rejected_by:
-            loggedUser.name ||
-            loggedUser.username ||
-            loggedUser.email ||
-            "MANAGER",
+          remarks: managerRejectRemarks.trim(),
         }),
       }
     );
 
-    const data = await response
-      .json()
-      .catch(() => null);
-
-    if (!response.ok) {
-      throw new Error(
-        data?.detail ||
-          data?.remarks?.[0] ||
-          "Failed to reject BOM."
-      );
-    }
-
     setBom(data);
     setManagerRejectOpen(false);
     setManagerRejectRemarks("");
-
+    window.dispatchEvent(new Event("notificationsUpdated"));
     await loadBOMDetail();
   } catch (error) {
     console.error(
@@ -1298,6 +1272,9 @@ const rejectBOM = async () => {
       error.message ||
         "Failed to reject BOM."
     );
+  } finally {
+    managerDecisionLockRef.current = false;
+    setIsManagerDecisionSaving(false);
   }
 };
   if (loading) {
@@ -1344,13 +1321,15 @@ const rejectBOM = async () => {
           type="button"
           className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700"
           onClick={approveBOM}
+          disabled={isManagerDecisionSaving}
         >
-          Approve
+          {isManagerDecisionSaving ? "Saving..." : "Approve"}
         </button>
 
         <button
           type="button"
           className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+          disabled={isManagerDecisionSaving}
           onClick={() => {
             setManagerRejectRemarks("");
             setManagerRejectOpen(true);
@@ -1954,8 +1933,9 @@ const rejectBOM = async () => {
           type="button"
           className="rounded-lg bg-red-600 px-4 py-2 text-white hover:bg-red-700"
           onClick={rejectBOM}
+          disabled={isManagerDecisionSaving}
         >
-          Reject BOM
+          {isManagerDecisionSaving ? "Saving..." : "Reject BOM"}
         </button>
       </div>
     </div>

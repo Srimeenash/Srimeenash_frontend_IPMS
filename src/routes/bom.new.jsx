@@ -24,6 +24,9 @@ function CreateBomPage() {
   const [componentsList, setComponentsList] = useState([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submitLockRef = useRef(false);
+  const componentsSectionRef = useRef(null);
+  const [componentError, setComponentError] = useState("");
+  const [submissionError, setSubmissionError] = useState("");
 
  const [bomNumber, setBomNumber] =
   useState("BOM-00001");
@@ -110,8 +113,10 @@ const specificationOptions = Array.from(
       ]),
   ).values(),
 );
-  const updateRow = (i, patch) =>
+  const updateRow = (i, patch) => {
+    if (patch.component) setComponentError("");
     setRows((r) => r.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
+  };
 
   const openComponentSpecificationModal = (row) => {
     const selectedComponent = componentOptions.find(
@@ -432,6 +437,19 @@ const computeRow = (row) => ({
   qty: Number(row.qty || 0),
 });
   const handleSubmit = async () => {
+  const selectedRows = rows.filter((row) =>
+    Number.isInteger(Number(row.component)) && Number(row.component) > 0
+  );
+
+  if (selectedRows.length === 0) {
+    setComponentError("Select at least one BOM component before submitting.");
+    componentsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+
+  setComponentError("");
+  setSubmissionError("");
+
   /*
    * Synchronous lock: React state updates are asynchronous, so two very
    * fast clicks can happen before isSubmitting re-renders the button.
@@ -454,9 +472,7 @@ const newBom = {
 
   status: "PENDING_MANAGER",
 
-  items: rows
-    .filter((row) => row.component)
-    .map((row) => ({
+  items: selectedRows.map((row) => ({
 
       component: Number(row.component),
 
@@ -552,6 +568,7 @@ const newBom = {
       "Backend save failed:",
       backendError
     );
+    setSubmissionError(backendError?.message || "Could not submit the BOM. Please try again.");
   } finally {
     submitLockRef.current = false;
     setIsSubmitting(false);
@@ -616,9 +633,9 @@ useEffect(() => {
 </Field>
       </FormGrid>
 
-<section className="mt-8">
+<section ref={componentsSectionRef} className="mt-8 scroll-mt-24">
   <div className="flex items-center justify-between mb-4">
-    <h2 className="text-lg font-semibold">BOM Components</h2>
+    <h2 className="text-lg font-semibold">BOM Components <span className="text-red-600">*</span></h2>
 
     <div className="flex items-center gap-2">
       <button
@@ -638,6 +655,10 @@ useEffect(() => {
       </button>
     </div>
   </div>
+
+  {componentError && (
+    <p role="alert" className="mb-3 text-sm text-red-600">{componentError}</p>
+  )}
 
   <div className="overflow-x-auto rounded-xl border border-border">
     <table className="w-full min-w-[1000px] border-collapse text-sm">
@@ -781,6 +802,9 @@ onChange={(e) => {
     </table>
   </div>
 </section>
+      {submissionError && (
+        <p role="alert" className="mt-4 text-sm text-red-600">{submissionError}</p>
+      )}
       <div className="mt-8 flex justify-end gap-3">
   <button
     type="button"

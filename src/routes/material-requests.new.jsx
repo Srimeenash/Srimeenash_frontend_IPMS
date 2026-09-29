@@ -257,6 +257,7 @@ const specificationOptions = Array.from(
   component_type: option.component_type,
   specifications: option.specifications,
   hsnNo: option.hsnNo,
+  unit: option.unit,
   unit_price: option.unit_price,
 }));
 
@@ -2203,6 +2204,64 @@ const updateBomRow = (i, patch) =>
       return nextRow;
     })
   );
+
+const changeBomSpecification = (index, value) => {
+  const typedValue = String(value ?? "");
+  const selected = specificationOptions.find(
+    (option) => option.label === typedValue,
+  );
+
+  if (selected) {
+    const nextCategory = normalizeBomCategory(selected.category);
+    setExpandedBomCategories((previous) =>
+      previous.includes(nextCategory)
+        ? previous
+        : [...previous, nextCategory],
+    );
+  }
+
+  setRows((previousRows) =>
+    previousRows.map((row, rowIndex) => {
+      if (rowIndex !== index || row._is_deleted) return row;
+
+      const nextRow = computeBomRow(
+        selected
+          ? {
+              ...row,
+              component: selected.componentValue,
+              component_code: selected.componentCode,
+              component_name: selected.componentCode,
+              category: selected.category || "",
+              component_type: selected.component_type || "",
+              specifications: selected.specifications,
+              specification: selected.specifications,
+              hsn_no: selected.hsnNo || "",
+              unit: selected.unit || "",
+              unit_price: Number(selected.unit_price || 0),
+            }
+          : {
+              ...row,
+              // Keep the category while typing so the row stays in its
+              // expanded section. A valid selection sets its new category.
+              component: null,
+              component_code: "",
+              component_name: "",
+              component_type: "",
+              specifications: typedValue,
+              specification: typedValue,
+              hsn_no: "",
+              unit: "",
+              unit_price: 0,
+            },
+      );
+
+      if (customizedBom && !row._is_new) {
+        nextRow._is_edited = true;
+      }
+      return nextRow;
+    }),
+  );
+};
 
 
 
@@ -4778,42 +4837,32 @@ async function handleSubmit(e) {
                           >
                             <td className="px-3 py-2">
                               {customizedBom ? (
-                                <SearchableSelect
-                                  name={`bom-specification-${i}`}
-                                  value={row.specifications || row.specification || ""}
-                                  options={specificationOptions}
-                                  placeholder="Search specification..."
-                                  disabled={isDeleted}
-                                  onChange={(event) => {
-                                    const selected =
-                                      specificationOptions.find(
-                                        (option) =>
-                                          option.label ===
-                                          event.target.value,
-                                      );
-
-                                    if (selected) {
-                                      updateBomRow(
-                                        i,
-                                        computeBomRow({
-                                          ...row,
-                                          component:
-                                            selected.componentValue,
-                                          component_code:
-                                            selected.componentCode,
-                                          category:
-                                            selected.category || "",
-                                          component_type:
-                                            selected.component_type || "",
-                                          specifications:
-                                            selected.specifications,
-                                          hsn_no:
-                                            selected.hsnNo || "",
-                                        }),
-                                      );
-                                    }
-                                  }}
-                                />
+                                <div className="flex min-w-[180px] items-center gap-1">
+                                  <div className="min-w-0 flex-1">
+                                    <SearchableSelect
+                                      name={`bom-specification-${i}`}
+                                      value={row.specifications ?? row.specification ?? ""}
+                                      options={specificationOptions}
+                                      placeholder="Search specification..."
+                                      disabled={isDeleted}
+                                      onChange={(event) =>
+                                        changeBomSpecification(i, event.target.value)
+                                      }
+                                    />
+                                  </div>
+                                  {!isDeleted &&
+                                    Boolean(row.specifications || row.specification) && (
+                                      <button
+                                        type="button"
+                                        onClick={() => changeBomSpecification(i, "")}
+                                        aria-label={`Clear specification for row ${i + 1}`}
+                                        title="Clear specification"
+                                        className="shrink-0 rounded-md border border-border px-2 py-1 text-sm text-muted-foreground hover:border-primary hover:text-primary"
+                                      >
+                                        ×
+                                      </button>
+                                    )}
+                                </div>
                               ) : (
                                 <Input
                                   value={row.specifications || row.specification || ""}
@@ -4855,11 +4904,15 @@ async function handleSubmit(e) {
                                             selected.value,
                                           component_code:
                                             selected.component_code,
+                                          component_name:
+                                            selected.label,
                                           category:
                                             selected.category,
                                           component_type:
                                             selected.component_type || "",
                                           specifications:
+                                            selected.specifications,
+                                          specification:
                                             selected.specifications,
                                           hsn_no:
                                             selected.hsnNo || "",
