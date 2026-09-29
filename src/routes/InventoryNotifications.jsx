@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PageShell, PageHeader } from "@/components/app/PageShell";
 import {
   fetchAuthenticatedJson,
@@ -613,6 +613,8 @@ export default function InventoryNotifications() {
   const [removingIds, setRemovingIds] = useState([]);
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
+  const activeIssueRequestsRef = useRef(new Set());
+  const notificationLoadSequenceRef = useRef(0);
 
   const [mrDetailsModal, setMrDetailsModal] = useState({
     open: false,
@@ -637,8 +639,12 @@ export default function InventoryNotifications() {
     error: "",
   });
 
-  const loadNotifications = useCallback(async () => {
-    setLoading(true);
+  const loadNotifications = useCallback(async ({ fresh = false, silent = false } = {}) => {
+    const loadSequence = ++notificationLoadSequenceRef.current;
+    const refreshQuery = fresh
+      ? `&_refresh=${Date.now()}-${loadSequence}`
+      : "";
+    if (!silent) setLoading(true);
     setErrorMessage("");
 
     try {
@@ -649,16 +655,16 @@ export default function InventoryNotifications() {
         projectInventoryData,
       ] = await Promise.all([
         fetchAuthenticatedJson(
-          "/notifications/?receiver=INVENTORY&category=MR&page_size=5000",
+          `/notifications/?receiver=INVENTORY&category=MR&page_size=5000${refreshQuery}`,
         ),
         fetchAuthenticatedJson(
-          "/materialrequest/material-requests/?page_size=5000",
+          `/materialrequest/material-requests/?page_size=5000${refreshQuery}`,
         ),
         fetchAuthenticatedJson(
           "/procurement/purchase-orders/?page_size=5000",
         ).catch(() => []),
         fetchAuthenticatedJson(
-          "/inventory/project-inventory/?page_size=5000",
+          `/inventory/project-inventory/?page_size=5000${refreshQuery}`,
         ).catch(() => []),
       ]);
 
@@ -1010,20 +1016,25 @@ export default function InventoryNotifications() {
         },
       );
 
-      setNotifications(finalData);
+      if (loadSequence === notificationLoadSequenceRef.current) {
+        setNotifications(finalData);
+      }
     } catch (error) {
       console.error(
         "Failed to load Inventory notifications:",
         error,
       );
 
-      setNotifications([]);
-      setErrorMessage(
-        error?.message ||
-          "Unable to load Inventory notifications.",
-      );
+      if (loadSequence === notificationLoadSequenceRef.current) {
+        setErrorMessage(
+          error?.message ||
+            "Unable to load Inventory notifications.",
+        );
+      }
     } finally {
-      setLoading(false);
+      if (loadSequence === notificationLoadSequenceRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -1031,8 +1042,11 @@ export default function InventoryNotifications() {
   useEffect(() => {
     void loadNotifications();
 
-    const reloadNotifications = () => {
-      void loadNotifications();
+    const reloadNotifications = (event) => {
+      // This page refreshes itself once after an issue. Other screens still
+      // receive these events, but they must not start duplicate list loads.
+      if (event?.detail?.source === "inventory-notifications") return;
+      void loadNotifications({ silent: true });
     };
 
     const intervalId =
@@ -1213,7 +1227,7 @@ export default function InventoryNotifications() {
 
 
   const loadProvideRows = useCallback(
-    async (notification) => {
+    async (notification, { fresh = false } = {}) => {
       const materialRequest = notification?.mr;
 
       if (!materialRequest) {
@@ -1227,6 +1241,9 @@ export default function InventoryNotifications() {
         materialRequest.material_request_id ||
         materialRequest.id ||
         notification.reference_id;
+      const refreshQuery = fresh
+        ? `&_refresh=${Date.now()}`
+        : "";
 
       const [
         detail,
@@ -1234,12 +1251,13 @@ export default function InventoryNotifications() {
       ] = await Promise.all([
         fetchAuthenticatedJson(
           `/materialrequest/material-requests/${materialRequestId}/`,
+          { cache: "no-store" },
         ),
         fetchAuthenticatedJson(
           `/inventory/project-inventory/?source_mr_number=${encodeURIComponent(
             materialRequestReference,
-          )}`,
-        ).catch(() => []),
+          )}${refreshQuery}`,
+        ),
       ]);
 
       const projectRows = toList(projectData);
@@ -1357,14 +1375,12 @@ export default function InventoryNotifications() {
 
         const purchasedReadyQuantity = Math.min(
           procurementRequirement,
-          Math.max(
-            Number(
-              matchingProjectRow?.purchased_quantity ??
-                sourceRow.purchased_quantity ??
-                0,
-            ),
-            qcPassedFromItems,
-          ),
+          matchingProjectRow
+            ? Math.max(Number(matchingProjectRow.purchased_quantity || 0), 0)
+            : Math.max(
+                Number(sourceRow.purchased_quantity || 0),
+                qcPassedFromItems,
+              ),
         );
 
         const issuedStoreQuantity = Math.max(
@@ -1392,13 +1408,18 @@ export default function InventoryNotifications() {
         );
 
         const remainingStoreQuantity = Math.max(
-          reservedStoreQuantity - issuedStoreQuantity,
+          Number(
+            matchingProjectRow?.remaining_store_quantity ??
+              reservedStoreQuantity - issuedStoreQuantity,
+          ),
           0,
         );
 
         const remainingPurchasedQuantity = Math.max(
-          purchasedReadyQuantity -
-            issuedPurchasedQuantity,
+          Number(
+            matchingProjectRow?.remaining_purchased_quantity ??
+              purchasedReadyQuantity - issuedPurchasedQuantity,
+          ),
           0,
         );
 
@@ -1544,7 +1565,7 @@ export default function InventoryNotifications() {
     });
 
     try {
-      const result = await loadProvideRows(notification);
+      const result = await loadProvideRows(notification, { fresh: true });
 
       setProvideModal((previous) => ({
         ...previous,
@@ -1682,6 +1703,9 @@ export default function InventoryNotifications() {
     }
 
     const notificationId = String(notification.id);
+    if (activeIssueRequestsRef.current.has(notificationId)) {
+      return;
+    }
 
     const materialRequestReference =
       materialRequest.material_request_id ||
@@ -1776,6 +1800,7 @@ export default function InventoryNotifications() {
       return;
     }
 
+    activeIssueRequestsRef.current.add(notificationId);
     setProcessingIds((previous) => [
       ...new Set([...previous, notificationId]),
     ]);
@@ -1856,9 +1881,102 @@ export default function InventoryNotifications() {
         );
       }
 
+      const issuedRows = toList(responseData?.project_inventory);
+      const completed =
+        allFulfilled && updatedStatus === "INVENTORY_ISSUED";
+      const readyToIssueQuantity = issuedRows.reduce(
+        (total, row) =>
+          total + Math.min(
+            getProjectRowReadyRemainingQuantity(row),
+            Math.max(
+              getProjectRowRequestedQuantity(row) -
+                getProjectRowIssuedQuantity(row),
+              0,
+            ),
+          ),
+        0,
+      );
+
+      // The POST response is authoritative. Change the notification action
+      // immediately instead of waiting for a cached list or the next poll.
+      // Ignore a background list request that started before this POST.
+      notificationLoadSequenceRef.current += 1;
+      setNotifications((previous) =>
+        previous.map((item) => {
+          const sameRequest =
+            String(item.id) === notificationId ||
+            (materialRequest.id != null &&
+              String(item.mr?.id) === String(materialRequest.id));
+          if (!sameRequest) return item;
+          return {
+            ...item,
+            status: updatedStatus || item.status,
+            allComponentsIssued: allFulfilled,
+            anyIssued: responseData?.any_issued === true,
+            readyToIssueQuantity: issuedRows.length
+              ? readyToIssueQuantity
+              : item.readyToIssueQuantity,
+            hasReadyToIssue: completed
+              ? false
+              : issuedRows.length
+                ? readyToIssueQuantity > 0
+                : item.hasReadyToIssue,
+            projectInventoryRows: issuedRows.length
+              ? issuedRows
+              : item.projectInventoryRows,
+            mr: {
+              ...(item.mr || {}),
+              status: updatedStatus || item.mr?.status,
+            },
+          };
+        }),
+      );
+
+      // Disable the issued row while its fresh serial and quantity data load.
+      setProvideModal((previous) => ({
+        ...previous,
+        notification: {
+          ...(previous.notification || {}),
+          status: updatedStatus || previous.notification?.status,
+        },
+        rows: previous.rows.map((row) => {
+          const issuedRow = issuedRows.find(
+            (item) => String(item.id) === String(row.projectRowId),
+          );
+          if (!issuedRow) return row;
+          const issuedStoreQuantity = Number(
+            issuedRow.issued_store_quantity || 0,
+          );
+          const issuedPurchasedQuantity = Number(
+            issuedRow.issued_purchased_quantity || 0,
+          );
+          return {
+            ...row,
+            issuedStoreQuantity,
+            issuedPurchasedQuantity,
+            totalIssuedQuantity:
+              issuedStoreQuantity + issuedPurchasedQuantity,
+            remainingQuantity: Number(issuedRow.remaining_quantity || 0),
+            remainingStoreQuantity: Number(
+              issuedRow.remaining_store_quantity || 0,
+            ),
+            remainingPurchasedQuantity: Number(
+              issuedRow.remaining_purchased_quantity || 0,
+            ),
+            providePurchasedQuantity: 0,
+            provideStoreQuantity: 0,
+            selectedPurchasedSerials: [],
+            selectedStoreSerials: [],
+            projectStatus: normalizeStatus(issuedRow.status),
+          };
+        }),
+        loading: true,
+      }));
+
       window.dispatchEvent(
         new CustomEvent("inventory:changed", {
           detail: {
+            source: "inventory-notifications",
             type:
               deductedStoreQuantity > 0
                 ? "storeIssued"
@@ -1872,11 +1990,15 @@ export default function InventoryNotifications() {
       );
 
       window.dispatchEvent(
-        new Event("notificationsUpdated"),
+        new CustomEvent("notificationsUpdated", {
+          detail: { source: "inventory-notifications" },
+        }),
       );
 
       window.dispatchEvent(
-        new Event("materialRequestsUpdated"),
+        new CustomEvent("materialRequestsUpdated", {
+          detail: { source: "inventory-notifications" },
+        }),
       );
 
       if (
@@ -1897,40 +2019,70 @@ export default function InventoryNotifications() {
        * The refreshed row becomes disabled when it is fully issued, while
        * the remaining component rows stay independently actionable.
        */
-      const refreshed = await loadProvideRows({
-        ...notification,
-        status:
-          updatedStatus ||
-          notification.status,
-        mr: {
-          ...(notification.mr || {}),
-          ...materialRequest,
-          status:
-            updatedStatus ||
-            materialRequest.status,
-        },
-      });
+      try {
+        const refreshed = await loadProvideRows({
+          ...notification,
+          status: updatedStatus || notification.status,
+          mr: {
+            ...(notification.mr || {}),
+            ...materialRequest,
+            status: updatedStatus || materialRequest.status,
+          },
+        }, { fresh: true });
 
-      setProvideModal((previous) => ({
-        ...previous,
-        materialRequest: refreshed.materialRequest,
-        rows: refreshed.rows,
-        loading: false,
-        error: "",
-      }));
-
-      await loadNotifications();
+        setProvideModal((previous) => ({
+          ...previous,
+          materialRequest: refreshed.materialRequest,
+          rows: refreshed.rows,
+          loading: false,
+          error: "",
+        }));
+        await loadNotifications({ fresh: true, silent: true });
+      } catch (refreshError) {
+        console.warn("Components issued, but refresh failed:", refreshError);
+        setProvideModal((previous) => ({
+          ...previous,
+          loading: false,
+          error: "Components were issued. Close and reopen this popup to refresh the remaining quantities.",
+        }));
+      }
     } catch (error) {
       console.error(
         "Failed to provide components:",
         error,
       );
 
-      setErrorMessage(
-        error?.message ||
-          "Unable to provide components.",
-      );
+      // A different session may have issued the same serial while this popup
+      // was open. Refresh before offering any retry against stale quantities.
+      let alreadyIssued = false;
+      try {
+        const refreshed = await loadProvideRows(notification, { fresh: true });
+        setProvideModal((previous) => ({
+          ...previous,
+          materialRequest: refreshed.materialRequest,
+          rows: refreshed.rows,
+          loading: false,
+          error: "",
+        }));
+        const currentRow = targetRow && refreshed.rows.find(
+          (row) => String(row.projectRowId) === String(targetRow.projectRowId),
+        );
+        alreadyIssued = Boolean(
+          currentRow && currentRow.remainingQuantity <= 0,
+        );
+        await loadNotifications({ fresh: true, silent: true });
+      } catch (refreshError) {
+        console.warn("Unable to refresh after issue error:", refreshError);
+      }
+
+      if (alreadyIssued) {
+        setErrorMessage("");
+        setSuccessMessage("This component is already issued. The current quantities are now displayed.");
+      } else {
+        setErrorMessage(error?.message || "Unable to provide components.");
+      }
     } finally {
+      activeIssueRequestsRef.current.delete(notificationId);
       setProcessingIds((previous) =>
         previous.filter(
           (id) => id !== notificationId,
@@ -1970,7 +2122,9 @@ export default function InventoryNotifications() {
       );
 
       window.dispatchEvent(
-        new Event("notificationsUpdated"),
+        new CustomEvent("notificationsUpdated", {
+          detail: { source: "inventory-notifications" },
+        }),
       );
     } catch (error) {
       console.error(
