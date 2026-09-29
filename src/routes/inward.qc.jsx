@@ -10,10 +10,11 @@ import { canWork } from "@/permissions";
 
 export default function InwardQCPage() {
   const { grnId } = useParams();
-  const { user } = useAuth();
+  const { user, activeRole } = useAuth();
 
   const canManageInward =
-    canWork(user, "inward");
+    canWork(user, "inward", activeRole) ||
+    canWork(user, "inventory", activeRole);
   const [headerPass, setHeaderPass] = useState(false);
 const [headerFail, setHeaderFail] = useState(false);
   const navigate = useNavigate();

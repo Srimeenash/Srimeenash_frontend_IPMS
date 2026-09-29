@@ -998,7 +998,7 @@ const collapseAllBomCategories = () => {
   setExpandedBomCategories([]);
 };
 const [returnablePurpose, setReturnablePurpose] = useState("");
-const [returnableSource, setReturnableSource] = useState("");
+const [returnableSources, setReturnableSources] = useState([]);
 const [selectedDroneMrId, setSelectedDroneMrId] = useState("");
 const [selectedDroneQuantity, setSelectedDroneQuantity] = useState("");
 const [inDroneRequests, setInDroneRequests] = useState([]);
@@ -1022,16 +1022,22 @@ const isDroneOrComponentPurpose =
   requestType === "RETURNABLE" &&
   RETURNABLE_DRONE_OR_COMPONENT_PURPOSES.has(returnablePurpose);
 
-const isDirectDroneReturnable =
+const hasDroneReturnable =
   isDroneOrComponentPurpose &&
-  returnableSource === "DRONE";
+  returnableSources.includes("DRONE");
 
 const isComponentReturnable =
   requestType === "RETURNABLE" &&
   (
     !isDroneOrComponentPurpose ||
-    returnableSource === "COMPONENTS"
+    returnableSources.includes("COMPONENTS")
   );
+
+const isDirectDroneReturnable =
+  hasDroneReturnable && !isComponentReturnable;
+
+const isCombinedReturnable =
+  hasDroneReturnable && isComponentReturnable;
 
 const inDroneMrOptions = inDroneRequests.map((request) => {
   const mrNumber = String(
@@ -1400,8 +1406,9 @@ async function loadNextMaterialRequestId() {
      *   MR-... / _01
      *   MR-... / _02
      *
-     * Only a physical instance whose backend status is AVAILABLE shows the
-     * normal "Sale" action in In Drone. Use that exact same rule here.
+     * A Returnable request must use a fresh physical drone. The API also
+     * checks prior Returnable usage because a good return may change the
+     * drone status back to AVAILABLE for other Inventory workflows.
      *
      * Therefore this dropdown MUST NOT contain:
      * - RETURNABLE_PENDING / RETURNABLE_ACTIVE
@@ -1441,7 +1448,8 @@ async function loadNextMaterialRequestId() {
         (instance) =>
           String(instance?.status || "")
             .trim()
-            .toUpperCase() === "AVAILABLE",
+            .toUpperCase() === "AVAILABLE" &&
+          instance?.returnable_eligible === true,
       )
       .map((instance) => {
         const instanceReferences = [
@@ -2701,21 +2709,21 @@ async function handleSubmit(e) {
 
     if (
       RETURNABLE_DRONE_OR_COMPONENT_PURPOSES.has(returnablePurpose) &&
-      !returnableSource
+      !returnableSources.length
     ) {
       newErrors.returnable_source =
-        "Please choose Drone or Components.";
+        "Select Drone, Components, or both.";
     }
 
     if (
-      isDirectDroneReturnable &&
+      hasDroneReturnable &&
       !selectedDroneMrId
     ) {
       newErrors.drone_mr =
         "Please select an existing In-Drone MR.";
     }
 
-    if (isDirectDroneReturnable) {
+    if (hasDroneReturnable) {
       const droneQuantity =
         Number(selectedDroneQuantity);
 
@@ -2957,6 +2965,22 @@ async function handleSubmit(e) {
    * No new MaterialRequest is created. The existing MR number is sent to
    * componentusage, which creates Returnable usage rows against that same MR.
    */
+  const droneMovementPayload = hasDroneReturnable
+    ? {
+        material_request_id:
+          selectedDroneMrOption?.mrNumber || selectedDroneMrId,
+        drone_instance_id:
+          selectedDroneMrOption?.droneInstanceId || undefined,
+        drone_instance_code:
+          selectedDroneMrOption?.droneInstanceCode || undefined,
+        purpose: returnablePurpose,
+        quantity: Number(selectedDroneQuantity),
+        return_due_date: form.returnable_date,
+        remarks: String(form.remarks || "").trim(),
+        source: "NEW_MATERIAL_REQUEST_PAGE",
+      }
+    : null;
+
   if (isDirectDroneReturnable) {
     submitLockRef.current = true;
     setIsSubmitting(true);
@@ -2966,22 +2990,7 @@ async function handleSubmit(e) {
         `${config.baseURL}/component-usage/move-from-in-drone/`,
         {
           method: "POST",
-          body: JSON.stringify({
-            material_request_id:
-              selectedDroneMrOption?.mrNumber ||
-              selectedDroneMrId,
-            drone_instance_id:
-              selectedDroneMrOption?.droneInstanceId ||
-              undefined,
-            drone_instance_code:
-              selectedDroneMrOption?.droneInstanceCode ||
-              undefined,
-            purpose: returnablePurpose,
-            quantity: Number(selectedDroneQuantity),
-            return_due_date: form.required_date,
-            remarks: String(form.remarks || "").trim(),
-            source: "NEW_MATERIAL_REQUEST_PAGE",
-          }),
+          body: JSON.stringify(droneMovementPayload),
         },
       );
 
@@ -3164,6 +3173,34 @@ async function handleSubmit(e) {
   setIsSubmitting(true);
 
   try {
+    if (isCombinedReturnable) {
+      const combinedResult = await fetchAuthenticatedJson(
+        `${config.baseURL}/component-usage/move-from-in-drone/`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            ...droneMovementPayload,
+            component_request: payload,
+          }),
+        },
+      );
+
+      window.dispatchEvent(new Event("notificationsUpdated"));
+      window.dispatchEvent(new Event("inventory:changed"));
+
+      navigate("/component-usage", {
+        state: {
+          openPurpose: returnablePurpose,
+          materialRequestId: combinedResult?.material_request_id ||
+            droneMovementPayload.material_request_id,
+          componentMaterialRequestId:
+            combinedResult?.component_material_request_id || "",
+          refresh: Date.now(),
+        },
+      });
+      return;
+    }
+
     /*
      * IMPORTANT:
      * MaterialRequestViewSet now uses request.user to store the actual
@@ -3426,11 +3463,11 @@ async function handleSubmit(e) {
 
                 if (value !== "RETURNABLE") {
                   setReturnablePurpose("");
-                  setReturnableSource("");
+                  setReturnableSources([]);
                   setSelectedDroneMrId("");
                   setSelectedDroneQuantity("");
                 } else {
-                  setReturnableSource("");
+                  setReturnableSources([]);
                   setSelectedDroneMrId("");
                   setSelectedDroneQuantity("");
                 }
@@ -3584,8 +3621,8 @@ async function handleSubmit(e) {
                       nextPurpose,
                     );
 
-                  setReturnableSource(
-                    nextNeedsChoice ? "" : "COMPONENTS",
+                  setReturnableSources(
+                    nextNeedsChoice ? [] : ["COMPONENTS"],
                   );
                   setSelectedDroneMrId("");
                   setSelectedDroneQuantity("");
@@ -3623,27 +3660,49 @@ async function handleSubmit(e) {
           {requestType === "RETURNABLE" &&
             isDroneOrComponentPurpose && (
               <Field label="Request For" required>
-                <Select
-                  name="returnable_source"
-                  value={returnableSource}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    setReturnableSource(value);
-                    setSelectedDroneMrId("");
-                    setSelectedDroneQuantity("");
-                    setErrors((previous) => ({
-                      ...previous,
-                      returnable_source: "",
-                      drone_mr: "",
-                      request_rows: "",
-                    }));
-                  }}
-                  options={[
-                    { value: "", label: "— Select Drone or Components —" },
-                    { value: "DRONE", label: "Drone" },
-                    { value: "COMPONENTS", label: "Components" },
-                  ]}
-                />
+                <div className="flex flex-wrap gap-3" role="group" aria-label="Returnable request items">
+                  {[["DRONE", "Drone"], ["COMPONENTS", "Components"]].map(
+                    ([source, label]) => (
+                      <label
+                        key={source}
+                        className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 text-sm font-medium transition ${
+                          returnableSources.includes(source)
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "border-border bg-background text-foreground hover:border-primary"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          name={`returnable_${source.toLowerCase()}`}
+                          checked={returnableSources.includes(source)}
+                          onChange={(event) => {
+                            const checked = event.target.checked;
+                            setReturnableSources((previous) =>
+                              checked
+                                ? [...previous, source]
+                                : previous.filter((value) => value !== source),
+                            );
+                            if (source === "DRONE" && !checked) {
+                              setSelectedDroneMrId("");
+                              setSelectedDroneQuantity("");
+                            }
+                            setErrors((previous) => ({
+                              ...previous,
+                              returnable_source: "",
+                              drone_mr: "",
+                              drone_quantity: "",
+                              request_rows: "",
+                            }));
+                          }}
+                        />
+                        {label}
+                      </label>
+                    ),
+                  )}
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Select both to use the existing drone MR and create a separate MR for the requested components.
+                </p>
                 {errors.returnable_source && (
                   <p className="mt-1 text-sm text-red-600">
                     {errors.returnable_source}
@@ -3653,7 +3712,7 @@ async function handleSubmit(e) {
             )}
 
           {requestType === "RETURNABLE" &&
-            isDirectDroneReturnable && (
+            hasDroneReturnable && (
               <Field label="Existing Drone / MR" required>
                 <SearchableSelect
                   name="existing_drone_mr"
@@ -3692,7 +3751,7 @@ async function handleSubmit(e) {
 
                 {inDroneMrOptions.length === 0 && (
                   <p className="mt-1 text-xs text-amber-600">
-                    No AVAILABLE physical drone is currently present in In Drone.
+                    No fresh, available physical drone is currently present in In Drone.
                   </p>
                 )}
 
@@ -3723,7 +3782,7 @@ async function handleSubmit(e) {
             )}
 
           {requestType === "RETURNABLE" &&
-            isDirectDroneReturnable &&
+            hasDroneReturnable &&
             selectedDroneMrOption && (
               <Field label="Drone Quantity" required>
                 <Input
@@ -4185,6 +4244,8 @@ async function handleSubmit(e) {
                 ? "Submitting..."
                 : isDirectDroneReturnable
                   ? "Send to Returnable"
+                  : isCombinedReturnable
+                    ? "Submit Drone & Components"
                   : "Submit Request"}
           </button>
         </div>

@@ -1,266 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { PageShell, PageHeader } from "@/components/app/PageShell";
 import {
   fetchAuthenticatedJson,
 } from "@/api";
-import { Loader2 } from "lucide-react";
-import { useAuth } from "@/AuthContext";
-import { canViewCosting } from "@/permissions";
-import { useCostDetails } from "@/components/app/SerialCostDetails";
-
-
-const NOTIFICATION_FETCH_PAGE_SIZE = 200;
-const notificationInFlightRequests = new Map();
-
-const NOTIFICATION_RELATED_LIST_CACHE_TTL_MS = 5000;
-const NOTIFICATION_DETAIL_CACHE_TTL_MS = 15000;
-const notificationCompletedRequestCache = new Map();
-const notificationDetailCache = new Map();
-const notificationDetailInFlightRequests = new Map();
-
-
-const resolveNotificationPageUrl = (url) => {
-  const value = String(url || "").trim();
-  if (!value) return "";
-
-  if (
-    /^https?:\/\//i.test(value) ||
-    value.startsWith("/")
-  ) {
-    return value;
-  }
-
-  const base = String(config.baseURL || "")
-    .replace(/\/+$/, "");
-
-  return base
-    ? `${base}/${value.replace(/^\/+/, "")}`
-    : value;
-};
-
-const fetchAllNotificationPages = async (
-  initialUrl,
-  options = {},
-) => {
-  const rows = [];
-  const visitedUrls = new Set();
-  let nextUrl = initialUrl;
-
-  while (nextUrl) {
-    const resolvedUrl =
-      resolveNotificationPageUrl(nextUrl);
-
-    if (
-      !resolvedUrl ||
-      visitedUrls.has(resolvedUrl)
-    ) {
-      break;
-    }
-
-    visitedUrls.add(resolvedUrl);
-
-    const payload =
-      await fetchAuthenticatedJson(
-        resolvedUrl,
-        options,
-      );
-
-    if (!payload) {
-      break;
-    }
-
-    if (Array.isArray(payload)) {
-      rows.push(...payload);
-      break;
-    }
-
-    const pageRows =
-      Array.isArray(payload?.results)
-        ? payload.results
-        : Array.isArray(payload?.items)
-          ? payload.items
-          : Array.isArray(payload?.data)
-            ? payload.data
-            : [];
-
-    rows.push(...pageRows);
-
-    nextUrl =
-      payload?.next ||
-      payload?.links?.next ||
-      "";
-  }
-
-  return rows;
-};
-
-const fetchAllNotificationPagesShared = (
-  initialUrl,
-  options = {},
-) => {
-  const method = String(
-    options?.method || "GET",
-  ).toUpperCase();
-
-  const {
-    ttlMs,
-    forceRefresh = false,
-    ...requestOptions
-  } = options || {};
-
-  if (method !== "GET") {
-    return fetchAllNotificationPages(
-      initialUrl,
-      requestOptions,
-    );
-  }
-
-  const key = `${method}:${String(initialUrl)}`;
-
-  /*
-   * Notification rows themselves must stay fresh.
-   * Related lookup/master datasets get a tiny cache only to collapse
-   * duplicate event-driven reloads occurring within a few seconds.
-   */
-  const effectiveTtlMs =
-    ttlMs !== undefined
-      ? Number(ttlMs) || 0
-      : String(initialUrl).includes("/notifications/")
-        ? 0
-        : NOTIFICATION_RELATED_LIST_CACHE_TTL_MS;
-
-  if (!forceRefresh && effectiveTtlMs > 0) {
-    const cached =
-      notificationCompletedRequestCache.get(key);
-
-    if (
-      cached &&
-      Date.now() - cached.createdAt <
-        effectiveTtlMs
-    ) {
-      return Promise.resolve(cached.value);
-    }
-  }
-
-  if (
-    notificationInFlightRequests.has(key)
-  ) {
-    return notificationInFlightRequests.get(
-      key,
-    );
-  }
-
-  const request =
-    fetchAllNotificationPages(
-      initialUrl,
-      requestOptions,
-    )
-      .then((rows) => {
-        if (effectiveTtlMs > 0) {
-          notificationCompletedRequestCache.set(
-            key,
-            {
-              createdAt: Date.now(),
-              value: rows,
-            },
-          );
-        }
-
-        return rows;
-      })
-      .finally(() => {
-        notificationInFlightRequests.delete(
-          key,
-        );
-      });
-
-  notificationInFlightRequests.set(
-    key,
-    request,
-  );
-
-  return request;
-};
-
-const fetchNotificationDetailCached = async (
-  url,
-  options = {},
-) => {
-  const {
-    ttlMs = NOTIFICATION_DETAIL_CACHE_TTL_MS,
-    forceRefresh = false,
-    ...requestOptions
-  } = options || {};
-
-  const resolvedUrl =
-    resolveNotificationPageUrl(url);
-
-  if (!resolvedUrl) {
-    throw new Error(
-      "Notification detail URL is missing.",
-    );
-  }
-
-  const key = `GET:${resolvedUrl}`;
-
-  if (!forceRefresh && ttlMs > 0) {
-    const cached =
-      notificationDetailCache.get(key);
-
-    if (
-      cached &&
-      Date.now() - cached.createdAt < ttlMs
-    ) {
-      return cached.value;
-    }
-  }
-
-  if (
-    notificationDetailInFlightRequests.has(
-      key,
-    )
-  ) {
-    return notificationDetailInFlightRequests.get(
-      key,
-    );
-  }
-
-  const request =
-    fetchAuthenticatedJson(
-      resolvedUrl,
-      requestOptions,
-    )
-      .then((value) => {
-        if (ttlMs > 0) {
-          notificationDetailCache.set(
-            key,
-            {
-              createdAt: Date.now(),
-              value,
-            },
-          );
-        }
-
-        return value;
-      })
-      .finally(() => {
-        notificationDetailInFlightRequests.delete(
-          key,
-        );
-      });
-
-  notificationDetailInFlightRequests.set(
-    key,
-    request,
-  );
-
-  return request;
-};
-
-const invalidateNotificationLoadingCache = () => {
-  notificationCompletedRequestCache.clear();
-  notificationDetailCache.clear();
-};
 
 const SUPPORTED_STATUSES = [
   "MANAGER_APPROVED",
@@ -863,113 +605,10 @@ const getMrShortageQuantity = (item = {}) => {
   );
 };
 
-
-const NotificationTableLoader = ({
-  title = "Loading notifications...",
-  subtitle = "Fetching the latest notification and workflow details.",
-}) => (
-  <div className="flex min-h-[170px] w-full items-center justify-center border-t border-border/60 bg-background">
-    <div className="flex flex-col items-center gap-3 px-6 py-8 text-center">
-      <Loader2 className="size-7 animate-spin text-primary" />
-      <div>
-        <p className="text-sm font-semibold text-foreground">
-          {title}
-        </p>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {subtitle}
-        </p>
-      </div>
-    </div>
-  </div>
-);
-
 export default function InventoryNotifications() {
-  const { user, activeRole } = useAuth();
-  const { openCostDetails, costDetailsPage } =
-    useCostDetails();
-
-  const canSeeCosting =
-    canViewCosting(
-      user,
-      activeRole,
-    );
-
   const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(true);
   const [processingIds, setProcessingIds] = useState([]);
-  /*
-   * Notification-level issue lock. While one Provide Components request
-   * is running for an MR notification, no second row/button can send
-   * another issue POST.
-   */
-  const issueLocksRef = useRef(new Set());
-
-  /*
-   * Final-issued MR overrides.
-   *
-   * The Provide Components popup reads ProjectInventory for one MR using a
-   * fresh source_mr_number query and can already show every row as Issued
-   * 1/1. Immediately afterwards, global refresh events load the broad
-   * notification/MR/ProjectInventory lists. If one of those aggregate GETs is
-   * a render behind, it must not revert the main row to:
-   *
-   *   QC Passed / Ready from Store + Provide Components
-   *
-   * Keep an in-memory completion override until the broad backend reload also
-   * confirms the MR as issued/completed.
-   */
-  const issuedMrOverridesRef = useRef(new Set());
-
-  const getMaterialRequestReferenceKeys = (
-    materialRequest = {},
-    notification = {},
-  ) =>
-    Array.from(
-      new Set(
-        [
-          materialRequest?.id,
-          materialRequest?.pk,
-          materialRequest?.material_request_id,
-          materialRequest?.request_id,
-          materialRequest?.mr_id,
-          notification?.reference_id,
-          notification?.referenceId,
-        ]
-          .filter(
-            (value) =>
-              value !== undefined &&
-              value !== null &&
-              String(value).trim() !== "",
-          )
-          .map((value) =>
-            String(value).trim().toUpperCase(),
-          ),
-      ),
-    );
-
-  const markMaterialRequestIssuedOverride = (
-    materialRequest = {},
-    notification = {},
-  ) => {
-    getMaterialRequestReferenceKeys(
-      materialRequest,
-      notification,
-    ).forEach((key) =>
-      issuedMrOverridesRef.current.add(key),
-    );
-  };
-
-  const hasMaterialRequestIssuedOverride = (
-    materialRequest = {},
-    notification = {},
-  ) =>
-    getMaterialRequestReferenceKeys(
-      materialRequest,
-      notification,
-    ).some((key) =>
-      issuedMrOverridesRef.current.has(key),
-    );
-
   const [processingRowKey, setProcessingRowKey] = useState(null);
   const [removingIds, setRemovingIds] = useState([]);
   const [errorMessage, setErrorMessage] = useState("");
@@ -998,26 +637,9 @@ export default function InventoryNotifications() {
     error: "",
   });
 
-  const loadNotifications = useCallback(
-    async (
-      {
-        showLoader = false,
-        showError = false,
-        forceRefresh = false,
-      } = {},
-    ) => {
-      /*
-       * Show the full-page Loading state only for the very first page load.
-       * Timer/event refreshes run silently in the background so the table
-       * does not keep flashing "Loading..." every few seconds.
-       */
-      if (showLoader) {
-        setLoading(true);
-      }
-
-      if (showError) {
-        setErrorMessage("");
-      }
+  const loadNotifications = useCallback(async () => {
+    setLoading(true);
+    setErrorMessage("");
 
     try {
       const [
@@ -1026,30 +648,17 @@ export default function InventoryNotifications() {
         purchaseOrderData,
         projectInventoryData,
       ] = await Promise.all([
-        fetchAllNotificationPagesShared(
-          `/notifications/?receiver=INVENTORY&category=MR&page_size=${NOTIFICATION_FETCH_PAGE_SIZE}`,
-          { cache: "no-store" },
+        fetchAuthenticatedJson(
+          "/notifications/?receiver=INVENTORY&category=MR&page_size=5000",
         ),
-        fetchAllNotificationPagesShared(
-          `/materialrequest/material-requests/?summary=1&page_size=${NOTIFICATION_FETCH_PAGE_SIZE}`,
-          {
-            cache: "no-store",
-            forceRefresh,
-          },
+        fetchAuthenticatedJson(
+          "/materialrequest/material-requests/?page_size=5000",
         ),
-        fetchAllNotificationPagesShared(
-          `/procurement/purchase-orders/?page_size=${NOTIFICATION_FETCH_PAGE_SIZE}`,
-          {
-            cache: "no-store",
-            forceRefresh,
-          },
+        fetchAuthenticatedJson(
+          "/procurement/purchase-orders/?page_size=5000",
         ).catch(() => []),
-        fetchAllNotificationPagesShared(
-          `/inventory/project-inventory/?page_size=${NOTIFICATION_FETCH_PAGE_SIZE}`,
-          {
-            cache: "no-store",
-            forceRefresh,
-          },
+        fetchAuthenticatedJson(
+          "/inventory/project-inventory/?page_size=5000",
         ).catch(() => []),
       ]);
 
@@ -1099,7 +708,7 @@ export default function InventoryNotifications() {
        */
       const actualNotifications =
         notificationList
-          .filter((notification, index) => {
+          .filter((notification) => {
             return (
               normalizeStatus(
                 notification.category,
@@ -1128,92 +737,17 @@ export default function InventoryNotifications() {
                 projectInventoryList,
               );
 
-            const materialRequestStatus =
-              normalizeStatus(
-                materialRequest?.status ||
-                  materialRequest?.workflow_status,
-              );
-
-            const materialRequestStatusConfirmsIssued =
-              [
-                "INVENTORY_ISSUED",
-                "MR_COMPLETED",
-                "ISSUED",
-                "COMPLETED",
-              ].includes(
-                materialRequestStatus,
-              );
-
-            const localIssuedOverride =
-              hasMaterialRequestIssuedOverride(
-                materialRequest || {},
-                notification,
-              );
-
-            /*
-             * Completion has three valid authoritative signals:
-             *
-             * 1. every ProjectInventory row is fulfilled;
-             * 2. the MaterialRequest workflow itself is already issued;
-             * 3. this browser just successfully completed the final issue.
-             *
-             * Previously only #1 was used. Therefore a broad ProjectInventory
-             * refresh that had not yet matched the just-issued rows could
-             * restore the persisted notification's QC_CHECKED status and make
-             * "Provide Components" appear again.
-             */
-            const completionConfirmed =
-              lifecycle.allComponentsIssued ||
-              materialRequestStatusConfirmsIssued ||
-              localIssuedOverride;
-
-            const displayStatus =
-              completionConfirmed
-                ? (
-                    materialRequestStatus ===
-                    "MR_COMPLETED" ||
-                    materialRequestStatus ===
-                    "COMPLETED"
-                      ? "MR_COMPLETED"
-                      : "INVENTORY_ISSUED"
-                  )
-                : normalizeStatus(
-                    notification.status,
-                  );
-
-            /*
-             * Once the broad backend datasets themselves confirm completion,
-             * the local override is no longer needed.
-             */
-            if (
-              lifecycle.allComponentsIssued ||
-              materialRequestStatusConfirmsIssued
-            ) {
-              getMaterialRequestReferenceKeys(
-                materialRequest || {},
-                notification,
-              ).forEach((key) =>
-                issuedMrOverridesRef.current.delete(key),
-              );
-            }
-
             return {
               ...notification,
-              /*
-               * ProjectInventory is authoritative for completion.
-               * A persisted Inventory notification can still carry
-               * INVENTORY_PENDING after the final issue. Never let that
-               * stale value turn an already-issued row back into
-               * Ready from Store / Provide Components.
-               */
-              status: displayStatus,
+              status: normalizeStatus(
+                notification.status,
+              ),
               mr: materialRequest,
               projectInventoryRows:
                 lifecycle.rows,
               allComponentsIssued:
-                completionConfirmed,
+                lifecycle.allComponentsIssued,
               anyIssued:
-                completionConfirmed ||
                 lifecycle.anyIssued,
               readyToIssueQuantity:
                 lifecycle.readyToIssueQuantity,
@@ -1266,23 +800,8 @@ export default function InventoryNotifications() {
                 projectInventoryList,
               );
 
-            const materialRequestAlreadyIssued =
-              [
-                "INVENTORY_ISSUED",
-                "MR_COMPLETED",
-                "ISSUED",
-                "COMPLETED",
-              ].includes(
-                workflowStatus,
-              ) ||
-              hasMaterialRequestIssuedOverride(
-                materialRequest,
-                {},
-              );
-
             const shouldRemainInInventoryQueue =
               !lifecycle.allComponentsIssued &&
-              !materialRequestAlreadyIssued &&
               (
                 inventoryFallbackStatuses.includes(
                   workflowStatus,
@@ -1492,60 +1011,34 @@ export default function InventoryNotifications() {
       );
 
       setNotifications(finalData);
-      } catch (error) {
-        console.error(
-          "Failed to load Inventory notifications:",
-          error,
-        );
+    } catch (error) {
+      console.error(
+        "Failed to load Inventory notifications:",
+        error,
+      );
 
-        /*
-         * Do not wipe the already visible table during a silent background
-         * refresh failure. Only the initial/manual visible load reports the
-         * page-level error.
-         */
-        if (showError) {
-          setErrorMessage(
-            error?.message ||
-              "Unable to load Inventory notifications.",
-          );
-        }
-      } finally {
-        if (showLoader) {
-          setLoading(false);
-        }
-      }
-    },
-    [],
-  );
+      setNotifications([]);
+      setErrorMessage(
+        error?.message ||
+          "Unable to load Inventory notifications.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
 
   useEffect(() => {
-    // Initial page entry: show Loading once.
-    void loadNotifications({
-      showLoader: true,
-      showError: true,
-    });
+    void loadNotifications();
 
-    // Timer/events: refresh silently without replacing the page with Loading.
     const reloadNotifications = () => {
-      /*
-       * Inventory issue events must reconcile against fresh ProjectInventory
-       * immediately. Otherwise the 5-second related-list cache can restore
-       * the old Ready from Store / Provide Components row.
-       */
-      invalidateNotificationLoadingCache();
-
-      void loadNotifications({
-        showLoader: false,
-        showError: false,
-        forceRefresh: true,
-      });
+      void loadNotifications();
     };
 
     const intervalId =
       window.setInterval(
         reloadNotifications,
-        60000,
+        15000,
       );
 
     window.addEventListener(
@@ -1618,7 +1111,7 @@ export default function InventoryNotifications() {
 
     try {
       const detail =
-        await fetchNotificationDetailCached(
+        await fetchAuthenticatedJson(
           `/materialrequest/material-requests/${encodeURIComponent(
             materialRequestId,
           )}/`,
@@ -1681,7 +1174,7 @@ export default function InventoryNotifications() {
 
     try {
       const detail =
-        await fetchNotificationDetailCached(
+        await fetchAuthenticatedJson(
           `/procurement/purchase-orders/${encodeURIComponent(
             poId,
           )}/`,
@@ -1739,63 +1232,24 @@ export default function InventoryNotifications() {
         detail,
         projectData,
       ] = await Promise.all([
-        fetchNotificationDetailCached(
+        fetchAuthenticatedJson(
           `/materialrequest/material-requests/${materialRequestId}/`,
         ),
-fetchAuthenticatedJson(
-  `/inventory/project-inventory/?source_mr_number=${encodeURIComponent(
-    materialRequestReference,
-  )}&_=${Date.now()}`,
-  {
-    cache: "no-store",
-  },
-).catch(() => []),
+        fetchAuthenticatedJson(
+          `/inventory/project-inventory/?source_mr_number=${encodeURIComponent(
+            materialRequestReference,
+          )}`,
+        ).catch(() => []),
       ]);
 
       const projectRows = toList(projectData);
-      const projectRowsWithSerials = await Promise.all(
-  projectRows.map(async (projectRow) => {
-    const projectRowId =
-      projectRow?.id ??
-      projectRow?.pk;
-
-    if (!projectRowId) {
-      return projectRow;
-    }
-
-    try {
-      const serialData =
-        await fetchAuthenticatedJson(
-          `/inventory/project-inventory/${encodeURIComponent(
-            projectRowId,
-          )}/serial-options/?_=${Date.now()}`,
-          {
-            cache: "no-store",
-          },
-        );
-
-      return {
-        ...projectRow,
-        ...(serialData || {}),
-      };
-    } catch (error) {
-      console.error(
-        "Unable to load Project Inventory serial options:",
-        projectRowId,
-        error,
-      );
-
-      return projectRow;
-    }
-  }),
-);
       const requestItems = getRequestItems(detail);
       const routeStatus = normalizeStatus(notification.status);
 
-const sourceRows =
-  projectRowsWithSerials.length > 0
-    ? projectRowsWithSerials
-    : requestItems;
+      const sourceRows =
+        projectRows.length > 0
+          ? projectRows
+          : requestItems;
 
       /*
        * ProjectInventory is one row per MR + component. Keep the popup one
@@ -1821,18 +1275,14 @@ const sourceRows =
             rowsMatchComponent(requestItem, sourceRow),
         );
 
-const matchingProjectRow =
-  projectRowsWithSerials.find((projectRow) =>
-    rowsMatchComponent(projectRow, sourceRow),
-  ) || null;
+        const matchingProjectRow =
+          projectRows.find((projectRow) =>
+            rowsMatchComponent(projectRow, sourceRow),
+          ) || null;
 
         const requestItem =
           matchingRequestItems[0] ||
-          (
-  projectRowsWithSerials.length === 0
-    ? sourceRow
-    : null
-);
+          (projectRows.length === 0 ? sourceRow : null);
 
         const requestedFromItems = matchingRequestItems.reduce(
           (sum, item) =>
@@ -2221,18 +1671,7 @@ const matchingProjectRow =
       }),
     }));
   };
-const setProvideIssueError = (message) => {
-  const value = String(
-    message || "Unable to provide components.",
-  );
 
-  setErrorMessage(value);
-
-  setProvideModal((previous) => ({
-    ...previous,
-    error: value,
-  }));
-};
   const syncProjectInventory = async (targetRow = null) => {
     const notification = provideModal.notification;
     const materialRequest =
@@ -2243,14 +1682,6 @@ const setProvideIssueError = (message) => {
     }
 
     const notificationId = String(notification.id);
-
-    /*
-     * React processingIds is visual state. The ref below is the immediate
-     * synchronous lock that makes the first click the only click accepted.
-     */
-    if (issueLocksRef.current.has(notificationId)) {
-      return;
-    }
 
     const materialRequestReference =
       materialRequest.material_request_id ||
@@ -2345,94 +1776,6 @@ const setProvideIssueError = (message) => {
       return;
     }
 
-    /*
-     * Calculate the expected final state from the SAME popup rows and
-     * allocations the user is confirming.
-     *
-     * Example:
-     *   Remaining before action = 1
-     *   Confirmed allocation     = 1
-     *   => remaining after action = 0
-     *
-     * When every popup row reaches zero, the main Inventory Notification
-     * can safely switch to Issued / Remove immediately after the backend
-     * confirms this POST succeeded, without waiting for a second GET.
-     */
-    const submittedQuantityByComponent =
-      new Map();
-
-    allocations.forEach((allocation) => {
-      const key =
-        String(
-          allocation?.component_id ??
-            "",
-        ).trim();
-
-      if (!key) {
-        return;
-      }
-
-      submittedQuantityByComponent.set(
-        key,
-        (
-          submittedQuantityByComponent.get(
-            key,
-          ) || 0
-        ) +
-          Math.max(
-            Number(
-              allocation?.quantity ||
-                0,
-            ),
-            0,
-          ),
-      );
-    });
-
-    const allFulfilledAfterThisIssue =
-      provideModal.rows.length > 0 &&
-      provideModal.rows.every((row) => {
-        const componentKey =
-          String(
-            row?.componentId ??
-              "",
-          ).trim();
-
-        const submittedQuantity =
-          submittedQuantityByComponent.get(
-            componentKey,
-          ) || 0;
-
-        const remainingBeforeAction =
-          Math.max(
-            Number(
-              row?.remainingQuantity ??
-                Math.max(
-                  Number(
-                    row?.requestedQuantity ||
-                      0,
-                  ) -
-                    Number(
-                      row?.totalIssuedQuantity ||
-                        0,
-                    ),
-                  0,
-                ),
-            ) || 0,
-            0,
-          );
-
-        return (
-          Math.max(
-            remainingBeforeAction -
-              submittedQuantity,
-            0,
-          ) === 0
-        );
-      });
-
-    issueLocksRef.current.add(notificationId);
-
     setProcessingIds((previous) => [
       ...new Set([...previous, notificationId]),
     ]);
@@ -2461,47 +1804,8 @@ const setProvideIssueError = (message) => {
         responseData?.mr_status,
       );
 
-      const backendAllFulfilled =
-        responseData?.all_fulfilled === true;
-
-      /*
-       * The backend flag is preferred, but some endpoint responses can report
-       * the previous aggregate state even though this exact successful issue
-       * consumed the final remaining quantity. The popup calculation above
-       * already knows the final result of the confirmed allocation.
-       */
       const allFulfilled =
-        backendAllFulfilled ||
-        allFulfilledAfterThisIssue;
-
-      /*
-       * IMPORTANT - IMMEDIATE FINAL MR UI UPDATE
-       *
-       * The sync-mr endpoint already tells us, in this same response, when
-       * every ProjectInventory component for this MR is fulfilled.
-       *
-       * Do not wait for the notification / Material Request /
-       * ProjectInventory background reload before changing the table.
-       * Those related lists have a small cache and previously caused the
-       * final "Provide Components" / "Waiting for Remaining" action to stay
-       * visible for a few seconds after the last component was issued.
-       *
-       * As soon as the backend confirms all_fulfilled, update the current
-       * notification row locally so:
-       *   Status -> Issued
-       *   Action -> Remove
-       *
-       * The normal background reload below still runs and reconciles the row
-       * with the authoritative backend state.
-       */
-      const finalIssuedStatus =
-        allFulfilled
-          ? (
-              updatedStatus === "MR_COMPLETED"
-                ? "MR_COMPLETED"
-                : "INVENTORY_ISSUED"
-            )
-          : updatedStatus;
+        responseData?.all_fulfilled === true;
 
       /*
        * Confirm that every STORE allocation was physically deducted
@@ -2552,93 +1856,6 @@ const setProvideIssueError = (message) => {
         );
       }
 
-      /*
-       * Only expose the final Issued / Remove state after the physical Store
-       * deduction validation above has succeeded.
-       */
-      if (allFulfilled) {
-        /*
-         * Set this BEFORE dispatching any refresh event. The event handlers can
-         * start loadNotifications() immediately, so the completion override
-         * must already exist before those GET responses can update React state.
-         */
-        markMaterialRequestIssuedOverride(
-          materialRequest,
-          notification,
-        );
-
-        invalidateNotificationLoadingCache();
-
-        setNotifications((previous) =>
-          previous.map((item) => {
-            const sameNotification =
-              String(item?.id ?? "") ===
-              String(notification?.id ?? "");
-
-            const itemMrReferences =
-              new Set(
-                [
-                  item?.mr?.id,
-                  item?.mr?.material_request_id,
-                  item?.mr?.request_id,
-                  item?.reference_id,
-                ]
-                  .filter(
-                    (value) =>
-                      value !== undefined &&
-                      value !== null &&
-                      String(value).trim() !== "",
-                  )
-                  .map((value) =>
-                    String(value).trim(),
-                  ),
-              );
-
-            const currentMrReferences =
-              [
-                materialRequest?.id,
-                materialRequest?.material_request_id,
-                materialRequest?.request_id,
-                notification?.reference_id,
-              ]
-                .filter(
-                  (value) =>
-                    value !== undefined &&
-                    value !== null &&
-                    String(value).trim() !== "",
-                )
-                .map((value) =>
-                  String(value).trim(),
-                );
-
-            const sameMaterialRequest =
-              currentMrReferences.some(
-                (reference) =>
-                  itemMrReferences.has(reference),
-              );
-
-            if (!sameNotification && !sameMaterialRequest) {
-              return item;
-            }
-
-            return {
-              ...item,
-              status: finalIssuedStatus,
-              allComponentsIssued: true,
-              anyIssued: true,
-              readyToIssueQuantity: 0,
-              hasReadyToIssue: false,
-              mr: {
-                ...(item?.mr || {}),
-                ...(materialRequest || {}),
-                status: finalIssuedStatus,
-                workflow_status: finalIssuedStatus,
-              },
-            };
-          }),
-        );
-      }
-
       window.dispatchEvent(
         new CustomEvent("inventory:changed", {
           detail: {
@@ -2662,9 +1879,12 @@ const setProvideIssueError = (message) => {
         new Event("materialRequestsUpdated"),
       );
 
-      if (allFulfilled) {
+      if (
+        allFulfilled &&
+        updatedStatus === "INVENTORY_ISSUED"
+      ) {
         setSuccessMessage(
-          `${materialRequest.material_request_id}: all components are issued. Status is now Issued and the Inventory Notification action is immediately available as Remove.`,
+          `${materialRequest.material_request_id}: all components are issued. Review the completed rows, close this popup, then use Remove in the Inventory Notification action when you are ready.`,
         );
       } else {
         setSuccessMessage(
@@ -2680,97 +1900,16 @@ const setProvideIssueError = (message) => {
       const refreshed = await loadProvideRows({
         ...notification,
         status:
-          finalIssuedStatus ||
+          updatedStatus ||
           notification.status,
         mr: {
           ...(notification.mr || {}),
           ...materialRequest,
           status:
-            finalIssuedStatus ||
+            updatedStatus ||
             materialRequest.status,
         },
       });
-
-      /*
-       * loadProvideRows uses the fresh per-MR ProjectInventory endpoint.
-       * If every refreshed popup row is now Issued X/X (remaining = 0), that
-       * is definitive proof that this MR is complete even when the aggregate
-       * sync response or broad list reload was briefly stale.
-       */
-      const refreshedRowsAllIssued =
-        Array.isArray(refreshed?.rows) &&
-        refreshed.rows.length > 0 &&
-        refreshed.rows.every((row) =>
-          Math.max(
-            Number(
-              row?.remainingQuantity ??
-                Math.max(
-                  Number(row?.requestedQuantity || 0) -
-                    Number(row?.totalIssuedQuantity || 0),
-                  0,
-                ),
-            ) || 0,
-            0,
-          ) === 0
-        );
-
-      if (refreshedRowsAllIssued) {
-        markMaterialRequestIssuedOverride(
-          refreshed.materialRequest ||
-            materialRequest,
-          notification,
-        );
-
-        setNotifications((previous) =>
-          previous.map((item) => {
-            const itemKeys =
-              getMaterialRequestReferenceKeys(
-                item?.mr || {},
-                item,
-              );
-
-            const completedKeys =
-              new Set(
-                getMaterialRequestReferenceKeys(
-                  refreshed.materialRequest ||
-                    materialRequest,
-                  notification,
-                ),
-              );
-
-            const sameMr =
-              itemKeys.some((key) =>
-                completedKeys.has(key),
-              );
-
-            if (!sameMr) {
-              return item;
-            }
-
-            return {
-              ...item,
-              status: "INVENTORY_ISSUED",
-              allComponentsIssued: true,
-              anyIssued: true,
-              readyToIssueQuantity: 0,
-              hasReadyToIssue: false,
-              mr: {
-                ...(item?.mr || {}),
-                ...(refreshed.materialRequest ||
-                  materialRequest ||
-                  {}),
-                status: "INVENTORY_ISSUED",
-                workflow_status:
-                  "INVENTORY_ISSUED",
-              },
-            };
-          }),
-        );
-
-        setSuccessMessage(
-          `${materialRequest.material_request_id}: all components are issued. Status is Issued and the action is Remove.`,
-        );
-      }
 
       setProvideModal((previous) => ({
         ...previous,
@@ -2780,6 +1919,7 @@ const setProvideIssueError = (message) => {
         error: "",
       }));
 
+      await loadNotifications();
     } catch (error) {
       console.error(
         "Failed to provide components:",
@@ -2791,8 +1931,6 @@ const setProvideIssueError = (message) => {
           "Unable to provide components.",
       );
     } finally {
-      issueLocksRef.current.delete(notificationId);
-
       setProcessingIds((previous) =>
         previous.filter(
           (id) => id !== notificationId,
@@ -2901,94 +2039,9 @@ const setProvideIssueError = (message) => {
     );
   };
 
-  const getNotificationDisplayStatus = (
-    notification,
-  ) => {
-    const currentStatus =
-      normalizeStatus(
-        notification?.status,
-      );
-
-    const mrStatus =
-      normalizeStatus(
-        notification?.mr?.status ||
-          notification?.mr?.workflow_status,
-      );
-
-    const attachedRows =
-      Array.isArray(
-        notification?.projectInventoryRows,
-      )
-        ? notification.projectInventoryRows
-        : [];
-
-    const completed =
-      notification?.allComponentsIssued === true ||
-      (
-        attachedRows.length > 0 &&
-        attachedRows.every(
-          isProjectRowFulfilled,
-        )
-      ) ||
-      [
-        "INVENTORY_ISSUED",
-        "MR_COMPLETED",
-        "ISSUED",
-        "COMPLETED",
-      ].includes(mrStatus) ||
-      hasMaterialRequestIssuedOverride(
-        notification?.mr || {},
-        notification || {},
-      );
-
-    if (!completed) {
-      return currentStatus;
-    }
-
-    return (
-      mrStatus === "MR_COMPLETED" ||
-      mrStatus === "COMPLETED"
-        ? "MR_COMPLETED"
-        : "INVENTORY_ISSUED"
-    );
-  };
-
   const renderAction = (notification) => {
     const status = normalizeStatus(notification.status);
     const notificationId = String(notification.id);
-
-    const attachedProjectRows =
-      Array.isArray(
-        notification?.projectInventoryRows,
-      )
-        ? notification.projectInventoryRows
-        : [];
-
-    const attachedRowsAllIssued =
-      attachedProjectRows.length > 0 &&
-      attachedProjectRows.every(
-        isProjectRowFulfilled,
-      );
-
-    const materialRequestStatus =
-      normalizeStatus(
-        notification?.mr?.status ||
-          notification?.mr?.workflow_status,
-      );
-
-    const completedForAction =
-      notification.allComponentsIssued === true ||
-      attachedRowsAllIssued ||
-      [
-        "INVENTORY_ISSUED",
-        "MR_COMPLETED",
-        "ISSUED",
-        "COMPLETED",
-      ].includes(materialRequestStatus) ||
-      hasMaterialRequestIssuedOverride(
-        notification?.mr || {},
-        notification,
-      );
 
     const isProcessing =
       processingIds.includes(notificationId);
@@ -2999,7 +2052,7 @@ const setProvideIssueError = (message) => {
      * notification record from this page.
      */
     if (
-      completedForAction ||
+      notification.allComponentsIssued === true ||
       status === "INVENTORY_ISSUED" ||
       status === "MR_COMPLETED"
     ) {
@@ -3045,25 +2098,9 @@ const setProvideIssueError = (message) => {
       notification.hasReadyToIssue === false
     ) {
       return (
-        <button
-          type="button"
-          disabled={isProcessing}
-          onClick={() => {
-            console.debug(
-              "Opening remaining component details:",
-              notification?.mr?.material_request_id ||
-                notification?.reference_id ||
-                notification?.id,
-            );
-            openProvideComponents(notification);
-          }}
-          className="inline-flex items-center justify-center rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 transition hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-60"
-          title="View issued and remaining components"
-        >
-          {isProcessing
-            ? "Opening..."
-            : "Waiting for Remaining"}
-        </button>
+        <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
+          Waiting for Remaining
+        </span>
       );
     }
 
@@ -3109,26 +2146,12 @@ const setProvideIssueError = (message) => {
     );
   }, [provideModal.rows]);
 
-  if (costDetailsPage) {
-    return costDetailsPage;
-  }
-
   return (
     <PageShell>
       <PageHeader
         title="Inventory Notifications"
         subtitle="Provide approved and QC-passed components for each Material Request"
       />
-
-      {/* Notification count tab */}
-      <div className="mb-4 flex flex-wrap gap-2">
-        <button
-          type="button"
-          className="inline-flex items-center gap-2 rounded-full border border-primary bg-primary/10 px-5 py-2 text-sm font-semibold text-primary"
-        >
-          MR ({notifications.length})
-        </button>
-      </div>
 
       {errorMessage && (
         <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -3144,17 +2167,7 @@ const setProvideIssueError = (message) => {
 
       <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950">
         <div className="min-w-[1500px]">
-          <div
-            className="grid items-center border-b border-slate-200 bg-slate-100 px-5 py-4 text-xs font-semibold uppercase tracking-wide text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
-            style={{
-              gridTemplateColumns: canSeeCosting
-                ? "repeat(12, minmax(0, 1fr))"
-                : "repeat(11, minmax(0, 1fr))",
-            }}
-          >
-            <div className="text-center">
-              S.No
-            </div>
+          <div className="grid grid-cols-10 items-center border-b border-slate-200 bg-slate-100 px-5 py-4 text-xs font-semibold uppercase tracking-wide text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
             <div className="text-center">
               MR ID
             </div>
@@ -3179,11 +2192,6 @@ const setProvideIssueError = (message) => {
             <div className="text-center">
               Required Date
             </div>
-            {canSeeCosting && (
-              <div className="text-center">
-                Cost Details
-              </div>
-            )}
             <div className="text-center">
               Status
             </div>
@@ -3193,10 +2201,9 @@ const setProvideIssueError = (message) => {
           </div>
 
           {loading ? (
-            <NotificationTableLoader
-              title="Loading Inventory notifications..."
-              subtitle="Fetching the latest inventory request and workflow details."
-            />
+            <div className="px-6 py-12 text-center text-sm text-slate-500">
+              Loading Inventory Notifications...
+            </div>
           ) : notifications.length === 0 ? (
             <div className="px-6 py-12 text-center text-sm text-slate-500">
               No Inventory Notifications
@@ -3218,14 +2225,8 @@ const setProvideIssueError = (message) => {
                   return (
                     <div
                       key={notification.id}
-                      className="grid items-center px-5 py-4 text-sm text-slate-700 transition hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-900/70"
-                      style={{
-                        gridTemplateColumns: canSeeCosting
-                          ? "repeat(12, minmax(0, 1fr))"
-                          : "repeat(11, minmax(0, 1fr))",
-                      }}
+                      className="grid grid-cols-10 items-center px-5 py-4 text-sm text-slate-700 transition hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-900/70"
                     >
-                      <div className="px-2 text-center font-semibold">{index + 1}</div>
                       <div className="flex justify-center px-2">
                         <button
                           type="button"
@@ -3312,34 +2313,9 @@ const setProvideIssueError = (message) => {
                           "-"}
                       </div>
 
-                      {canSeeCosting && (
-                        <div className="flex justify-center px-2">
-                          <button
-                            type="button"
-                            className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-1.5 text-xs font-semibold text-primary transition hover:bg-primary/10"
-                            onClick={() =>
-                              openCostDetails(
-                                "materialRequest",
-                                {
-                                  ...materialRequest,
-                                  backendId:
-                                    materialRequest.id ??
-                                    materialRequest.pk ??
-                                    materialRequest.material_request_id,
-                                },
-                              )
-                            }
-                          >
-                            View Details
-                          </button>
-                        </div>
-                      )}
-
                       <div className="flex justify-center px-2">
                         {getStatusBadge(
-                          getNotificationDisplayStatus(
-                            notification,
-                          ),
+                          notification.status,
                         )}
                       </div>
 
@@ -3770,19 +2746,17 @@ const setProvideIssueError = (message) => {
                           )}
                         </div>
 
-                        {canSeeCosting && (
-                          <div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-5">
-                            <div className="text-xs font-semibold uppercase tracking-wide text-emerald-600">
-                              PO Grand Total
-                            </div>
-                            <div className="mt-1 text-3xl font-bold text-emerald-900">
-                              ₹
-                              {formatCurrency(
-                                getPoTotal(po),
-                              )}
-                            </div>
+                        <div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-5">
+                          <div className="text-xs font-semibold uppercase tracking-wide text-emerald-600">
+                            PO Grand Total
                           </div>
-                        )}
+                          <div className="mt-1 text-3xl font-bold text-emerald-900">
+                            ₹
+                            {formatCurrency(
+                              getPoTotal(po),
+                            )}
+                          </div>
+                        </div>
 
                         {(po.remarks ||
                           po.remark ||
@@ -3809,19 +2783,15 @@ const setProvideIssueError = (message) => {
                                 <th className="px-4 py-3 text-center">
                                   Qty
                                 </th>
-                                {canSeeCosting && (
-                                  <>
-                                    <th className="px-4 py-3 text-right">
-                                      Unit Price
-                                    </th>
-                                    <th className="px-4 py-3 text-center">
-                                      GST %
-                                    </th>
-                                    <th className="px-4 py-3 text-right">
-                                      Line Total
-                                    </th>
-                                  </>
-                                )}
+                                <th className="px-4 py-3 text-right">
+                                  Unit Price
+                                </th>
+                                <th className="px-4 py-3 text-center">
+                                  GST %
+                                </th>
+                                <th className="px-4 py-3 text-right">
+                                  Line Total
+                                </th>
                               </tr>
                             </thead>
 
@@ -3848,41 +2818,37 @@ const setProvideIssueError = (message) => {
                                           item,
                                         )}
                                       </td>
-                                      {canSeeCosting && (
-                                        <>
-                                          <td className="px-4 py-3 text-right">
-                                            ₹
-                                            {formatCurrency(
-                                              getPoItemUnitPrice(
-                                                item,
-                                              ),
-                                            )}
-                                          </td>
-                                          <td className="px-4 py-3 text-center">
-                                            {getPoItemGst(
-                                              item,
-                                            ).toFixed(
-                                              2,
-                                            )}
-                                            %
-                                          </td>
-                                          <td className="px-4 py-3 text-right font-semibold">
-                                            ₹
-                                            {formatCurrency(
-                                              getPoLineTotal(
-                                                item,
-                                              ),
-                                            )}
-                                          </td>
-                                        </>
-                                      )}
+                                      <td className="px-4 py-3 text-right">
+                                        ₹
+                                        {formatCurrency(
+                                          getPoItemUnitPrice(
+                                            item,
+                                          ),
+                                        )}
+                                      </td>
+                                      <td className="px-4 py-3 text-center">
+                                        {getPoItemGst(
+                                          item,
+                                        ).toFixed(
+                                          2,
+                                        )}
+                                        %
+                                      </td>
+                                      <td className="px-4 py-3 text-right font-semibold">
+                                        ₹
+                                        {formatCurrency(
+                                          getPoLineTotal(
+                                            item,
+                                          ),
+                                        )}
+                                      </td>
                                     </tr>
                                   ),
                                 )
                               ) : (
                                 <tr>
                                   <td
-                                    colSpan={canSeeCosting ? 5 : 2}
+                                    colSpan={5}
                                     className="px-4 py-10 text-center text-slate-500"
                                   >
                                     No Purchase Order line items were found.

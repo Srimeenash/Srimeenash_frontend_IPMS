@@ -281,6 +281,16 @@ const getUsageMovementId = (row = {}) => {
   ].join("|");
 };
 
+const getLinkedComponentMrNumber = (row = {}) => {
+  const details = Array.isArray(row.inventory_issue_details)
+    ? row.inventory_issue_details
+    : [];
+  return String(
+    details.find((detail) => detail?.linked_component_mr_number)
+      ?.linked_component_mr_number || "",
+  ).trim();
+};
+
 const getDroneMovementQuantity = (
   items = [],
 ) => {
@@ -1191,6 +1201,10 @@ export default function ReturnablePage() {
           remarks:
             row.remarks || "",
           mode,
+          linkedMrNumber:
+            mode === "DRONE"
+              ? getLinkedComponentMrNumber(row)
+              : sourceMr?.source_drone_mr_number || "",
           droneQuantity: 0,
           items: [],
         });
@@ -1198,6 +1212,13 @@ export default function ReturnablePage() {
 
       const currentGroup =
         map.get(key);
+
+      if (!currentGroup.linkedMrNumber) {
+        currentGroup.linkedMrNumber =
+          currentGroup.mode === "DRONE"
+            ? getLinkedComponentMrNumber(row)
+            : sourceMr?.source_drone_mr_number || "";
+      }
 
       if (!currentGroup.project) {
         currentGroup.project =
@@ -1273,6 +1294,11 @@ export default function ReturnablePage() {
           mr.approval_status ||
           group.approvalStatus;
 
+        group.linkedMrNumber =
+          mr.source_drone_mr_number ||
+          group.linkedMrNumber ||
+          "";
+
         return;
       }
 
@@ -1312,7 +1338,7 @@ export default function ReturnablePage() {
         requestedDate:
           mr.date,
         returnDate:
-          mr.required_date,
+          mr.returnable_date || mr.required_date,
         mrStatus,
         approvalStatus:
           mr.approval_status || "",
@@ -1322,6 +1348,8 @@ export default function ReturnablePage() {
         remarks:
           mr.remarks || "",
         mode: "COMPONENTS",
+        linkedMrNumber:
+          mr.source_drone_mr_number || "",
         items: requestItems.map(
           (item, index) => ({
             ...item,
@@ -2948,6 +2976,11 @@ export default function ReturnablePage() {
 
                 <div className="font-semibold">
                   {group.mrNumber}
+                  {group.linkedMrNumber && (
+                    <div className="mt-1 text-xs font-normal text-muted-foreground">
+                      With {group.mode === "DRONE" ? "components" : "drone"} MR: {group.linkedMrNumber}
+                    </div>
+                  )}
                 </div>
 
                 <div>
