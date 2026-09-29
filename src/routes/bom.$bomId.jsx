@@ -979,14 +979,20 @@ const getUomForBomRow = (row = {}) => {
 
 const [editingIndex, setEditingIndex] = useState(null);
 const [editRow, setEditRow] = useState(null);
+const [isComponentSaving, setIsComponentSaving] = useState(false);
+const [componentSaveError, setComponentSaveError] = useState("");
+const componentSaveLockRef = useRef(false);
+const nextNewRowIdRef = useRef(0);
 const computeRow = (row) => ({
   ...row,
   quantity: Number(row.quantity || 0),
 });
 const addRow = () => {
+  const localId = ++nextNewRowIdRef.current;
   setNewRows((prev) => [
     ...prev,
     {
+      localId,
       component: null,
       component_code: "",
       category: "",
@@ -1083,108 +1089,123 @@ await loadBOMDetail();
 };
 
 const handleEditItem = (index) => {
+  setComponentSaveError("");
   setEditingIndex(index);
   setEditRow({ ...items[index] });
 };
+const hasValidQuantity = (value) =>
+  Number.isInteger(Number(value)) && Number(value) > 0;
+
+const saveExistingItem = async (row) => {
+  // PATCH updates only the editable values. The linked component stays intact.
+  const updatedItem = await fetchAuthenticatedJson(
+    `${config.baseURL}/bom/bom-items/${row.id}/`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        quantity: Number(row.quantity),
+        unit: String(row.unit || "").trim(),
+        remarks: row.remarks || "",
+      }),
+    }
+  );
+
+  setItems((current) =>
+    current.map((item) =>
+      item.id === updatedItem.id
+        ? { ...updatedItem, quantity: Number(updatedItem.quantity || 0) }
+        : item
+    )
+  );
+  setEditingIndex(null);
+  setEditRow(null);
+};
+
 const handleSaveEdit = async () => {
+  if (componentSaveLockRef.current || !editRow?.id) return;
+  if (!hasValidQuantity(editRow.quantity)) {
+    setComponentSaveError("Quantity must be a whole number greater than 0.");
+    return;
+  }
+
+  componentSaveLockRef.current = true;
+  setIsComponentSaving(true);
+  setComponentSaveError("");
   try {
-    const quantity = Number(editRow.quantity || 0);
-
-    const updatedItem = await fetchAuthenticatedJson(
-      `${config.baseURL}/bom/bom-items/${editRow.id}/`,
-      {
-        method: "PUT",
-        body: JSON.stringify({
-          bom: Number(bom.id),
-          component_code: editRow.component_code,
-          category: editRow.category,
-          specifications: editRow.specifications,
-          quantity: quantity,
-          unit: String(
-            editRow.unit ||
-            editRow.unit_of_measurements ||
-            ""
-          ).trim(),
-          remarks: editRow.remarks || "",
-        }),
-      }
-    );
-    const normalizedItem = {
-      ...updatedItem,
-      quantity: Number(updatedItem.quantity || 0),
-    };
-
-    const updated = [...items];
-    updated[editingIndex] = normalizedItem;
-
-setItems(updated);
-setEditingIndex(null);
-setEditRow(null);
-
-await loadBOMDetail();
+    await saveExistingItem(editRow);
+    await loadBOMDetail();
   } catch (err) {
-    console.error(err);
-    alert("Failed to update component");
+    console.error("Failed to update BOM component:", err);
+    setComponentSaveError(err?.message || "Failed to update component.");
+  } finally {
+    componentSaveLockRef.current = false;
+    setIsComponentSaving(false);
   }
 };
 const handleCancelEdit = () => {
   setEditingIndex(null);
   setEditRow(null);
 };
-const handleAddItem = async () => {
-  try {
-    if (!newRows.length) {
-      alert("Please add at least one component.");
+const handleSaveComponents = async () => {
+  if (componentSaveLockRef.current) return;
+
+  const pendingEdit = editingIndex !== null ? editRow : null;
+  const pendingNewRows = [...newRows];
+  if (!pendingEdit && pendingNewRows.length === 0) return;
+
+  if (pendingEdit && !hasValidQuantity(pendingEdit.quantity)) {
+    setComponentSaveError("Quantity must be a whole number greater than 0.");
+    return;
+  }
+
+  for (const row of pendingNewRows) {
+    if (!Number.isInteger(Number(row.component)) || Number(row.component) <= 0) {
+      setComponentSaveError("Select a valid component for every new row.");
       return;
     }
+    if (!hasValidQuantity(row.quantity)) {
+      setComponentSaveError("Quantity must be a whole number greater than 0.");
+      return;
+    }
+  }
 
-    for (const row of newRows) {
-      const quantity = Number(row.quantity || 0);
+  componentSaveLockRef.current = true;
+  setIsComponentSaving(true);
+  setComponentSaveError("");
+  try {
+    if (pendingEdit) {
+      await saveExistingItem(pendingEdit);
+    }
 
-      if (!row.component) {
-        alert("Please select a valid component for every row.");
-        return;
-      }
-
-      if (quantity <= 0) {
-        alert("Quantity must be greater than 0.");
-        return;
-      }
-
-      const payload = {
-        bom: Number(bom.id),
-
-        // IMPORTANT
-        component: Number(row.component),
-
-        category: row.category || "",
-        specifications: row.specifications || "",
-        quantity: quantity,
-        unit: String(
-          row.unit ||
-          row.unit_of_measurements ||
-          ""
-        ).trim(),
-        remarks: row.remarks || "",
-      };
-
-      console.log("BOM ITEM PAYLOAD:", payload);
-
+    for (const row of pendingNewRows) {
       await fetchAuthenticatedJson(
         `${config.baseURL}/bom/bom-items/`,
         {
           method: "POST",
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            bom: Number(bom.id),
+            component: Number(row.component),
+            category: row.category || "",
+            specifications: row.specifications || "",
+            quantity: Number(row.quantity),
+            unit: String(row.unit || row.unit_of_measurements || "").trim(),
+            remarks: row.remarks || "",
+          }),
         }
+      );
+      // If a later row fails, a retry must not create this saved row again.
+      setNewRows((current) =>
+        current.filter((candidate) => candidate.localId !== row.localId)
       );
     }
 
     await loadBOMDetail();
-setNewRows([]);
-
   } catch (err) {
-    console.error("Failed to save BOM item:", err);
-    alert("Failed to save components");
+    console.error("Failed to save BOM components:", err);
+    setComponentSaveError(err?.message || "Failed to save components.");
+  } finally {
+    componentSaveLockRef.current = false;
+    setIsComponentSaving(false);
   }
 };
 
@@ -1416,6 +1437,7 @@ const rejectBOM = async () => {
     <button
       type="button"
       onClick={addRow}
+      disabled={isComponentSaving}
       className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
     >
       <Plus className="h-4 w-4" />
@@ -1538,14 +1560,16 @@ const rejectBOM = async () => {
           <button
             type="button"
             onClick={handleSaveEdit}
+            disabled={isComponentSaving}
             className="text-green-600 text-xs"
           >
-            Save
+            {isComponentSaving ? "Saving..." : "Save"}
           </button>
 
           <button
             type="button"
             onClick={handleCancelEdit}
+            disabled={isComponentSaving}
             className="text-gray-500 text-xs"
           >
             Cancel
@@ -1587,7 +1611,7 @@ const rejectBOM = async () => {
        {canEngineerEdit &&
   newRows.map((row, i) => (
           <tr
-            key={`new-${i}`}
+            key={`new-${row.localId}`}
             className="border-b hover:bg-muted/30 transition-colors"
           >
             <td className="px-4 py-3 text-left">
@@ -1703,6 +1727,8 @@ const rejectBOM = async () => {
             {/* ACTION */}
             <td className="px-4 py-3 text-center">
               <button
+                type="button"
+                disabled={isComponentSaving}
                 onClick={() => deleteRow(i)}
                 className="text-red-500 hover:text-red-600"
               >
@@ -1716,14 +1742,21 @@ const rejectBOM = async () => {
   </div>
 
 
-{canEngineerEdit && (
+{componentSaveError && (
+  <p role="alert" className="mt-3 text-sm text-red-600">
+    {componentSaveError}
+  </p>
+)}
+
+{canEngineerEdit && (newRows.length > 0 || editingIndex !== null) && (
   <div className="flex justify-end mt-4">
     <button
       type="button"
-      onClick={handleAddItem}
+      onClick={handleSaveComponents}
+      disabled={isComponentSaving}
       className="rounded-lg bg-primary px-5 py-2 text-white"
     >
-      Save Components
+      {isComponentSaving ? "Saving..." : "Save Components"}
     </button>
   </div>
 )}
