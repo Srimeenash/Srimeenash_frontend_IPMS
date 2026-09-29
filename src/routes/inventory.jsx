@@ -482,6 +482,7 @@ export default function InventoryPage() {
   ].includes(currentRole);
 
   const canStartInDroneSale = [
+    "inventory",
     "finance",
     "admin",
   ].includes(currentRole);
@@ -9162,7 +9163,7 @@ issued_to:
       await loadApprovedMaterialRequests();
 
       /*
-       * Stay on In Drone after Finance/Admin submits the Sale.
+       * Stay on In Drone after Inventory/Finance/Admin submits the Sale.
        * The Action cell immediately changes to:
        *   Pending Management Approval
        *
@@ -13931,79 +13932,59 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
 
         quantity += poQuantity;
 
-        // Use the same final/order total carried by the Purchase Order.
-        const explicitPoTotal = [
-          purchaseOrder?.grand_total,
-          purchaseOrder?.grandTotal,
-          purchaseOrder?.total_amount,
-          purchaseOrder?.totalAmount,
-          purchaseOrder?.order_total,
-          purchaseOrder?.orderTotal,
-          purchaseOrder?.net_total,
-          purchaseOrder?.netTotal,
-          purchaseOrder?.total,
-          purchaseOrder?.amount,
-        ]
-          .map((value) => Number(value))
-          .find(
-            (value) =>
-              Number.isFinite(value) &&
-              value > 0,
+        // A PO grand total can include freight and other charges that do
+        // not belong to a component. Match the PO Amount in the Project
+        // Inventory table and the issued component value in In Drone.
+        cost += items.reduce((sum, item) => {
+          const itemQuantity = Math.max(
+            Number(
+              item?.quantity ??
+                item?.qty ??
+                item?.ordered_quantity ??
+                item?.orderedQuantity ??
+                0,
+            ) || 0,
+            0,
           );
+          if (itemQuantity <= 0) return sum;
 
-        if (explicitPoTotal) {
-          cost += explicitPoTotal;
-          return;
-        }
+          const explicitLineAmount = [
+            item?.total_price,
+            item?.totalPrice,
+            item?.total_amount,
+            item?.totalAmount,
+            item?.line_total,
+            item?.lineTotal,
+            item?.amount,
+          ]
+            .map((value) => Number(value))
+            .find((value) => Number.isFinite(value) && value > 0);
+          if (explicitLineAmount) return sum + explicitLineAmount;
 
-        // Compatibility fallback if an old PO response has no final total.
-        cost += items.reduce(
-          (sum, item) => {
-            const itemQuantity = Math.max(
-              Number(
-                item?.quantity ??
-                  item?.qty ??
-                  item?.ordered_quantity ??
-                  item?.orderedQuantity ??
-                  0,
-              ) || 0,
-              0,
-            );
-
-            const unitPrice = Math.max(
-              Number(
-                item?.unit_price ??
-                  item?.unitPrice ??
-                  item?.price ??
-                  item?.rate ??
-                  0,
-              ) || 0,
-              0,
-            );
-
-            const gstPercent = Math.max(
-              Number(
-                item?.gst_percentage ??
-                  item?.gstPercent ??
-                  item?.gst ??
-                  item?.tax_percentage ??
-                  item?.taxPercent ??
-                  0,
-              ) || 0,
-              0,
-            );
-
-            const baseAmount =
-              itemQuantity * unitPrice;
-
-            return (
-              sum +
-              baseAmount +
-              (baseAmount * gstPercent) / 100
-            );
-          },
-          0,
-        );
+          const unitPrice = Math.max(
+            Number(
+              item?.unit_price ??
+                item?.unitPrice ??
+                item?.price ??
+                item?.rate ??
+                0,
+            ) || 0,
+            0,
+          );
+          const gstPercent = Math.max(
+            Number(
+              item?.gst_percentage ??
+                item?.gstPercent ??
+                item?.gst ??
+                item?.tax_percentage ??
+                item?.taxPercent ??
+                0,
+            ) || 0,
+            0,
+          );
+          const basicAmount = itemQuantity * unitPrice;
+          return sum + basicAmount + (basicAmount * gstPercent) / 100;
+        }, 0);
       });
 
       return {
