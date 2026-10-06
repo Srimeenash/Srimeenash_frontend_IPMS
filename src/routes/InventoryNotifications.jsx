@@ -1289,6 +1289,32 @@ export default function InventoryNotifications() {
         ? `&_refresh=${Date.now()}`
         : "";
 
+      /*
+       * Refresh ProjectInventory first from authoritative Inward QC data.
+       * This is refresh-only: it does NOT issue stock.
+       *
+       * It fixes historical Retail Sales rows where the MR status already
+       * reached QC_CHECKED but ProjectInventory still contained zero
+       * purchased/QC-ready quantity.
+       */
+      const refreshedProjectData =
+        await fetchAuthenticatedJson(
+          "/inventory/project-inventory/refresh-mr/",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              material_request_id:
+                materialRequestReference,
+            }),
+          },
+        ).catch((error) => {
+          console.warn(
+            "Project Inventory refresh failed; falling back to current rows:",
+            error,
+          );
+          return null;
+        });
+
       const [
         detail,
         projectData,
@@ -1297,16 +1323,28 @@ export default function InventoryNotifications() {
           `/materialrequest/material-requests/${materialRequestId}/`,
           { cache: "no-store" },
         ),
-        fetchAuthenticatedJson(
-          `/inventory/project-inventory/?source_mr_number=${encodeURIComponent(
-            materialRequestReference,
-          )}&include_store_serials=1${refreshQuery}`,
-        ),
+        refreshedProjectData
+          ? Promise.resolve(
+              refreshedProjectData?.project_inventory ||
+                refreshedProjectData,
+            )
+          : fetchAuthenticatedJson(
+              `/inventory/project-inventory/?source_mr_number=${encodeURIComponent(
+                materialRequestReference,
+              )}&include_store_serials=1${refreshQuery}`,
+            ),
       ]);
 
       const projectRows = toList(projectData);
       const requestItems = getRequestItems(detail);
       const routeStatus = normalizeStatus(notification.status);
+      const detailRequestType = normalizeStatus(
+        detail?.request_type ||
+          materialRequest?.request_type ||
+          "",
+      );
+      const isRetailSalesRequest =
+        detailRequestType === "RETAIL_SALES";
 
       const sourceRows =
         projectRows.length > 0
@@ -1412,6 +1450,43 @@ export default function InventoryNotifications() {
           0,
         );
 
+        /*
+         * RETAIL SALES FIX:
+         * Old Retail Sales rows can have purchased_quantity=0 even after
+         * Inward QC is completed, while qc_passed_quantity already contains
+         * the correct passed quantity. Never let the stale zero hide QC-ready
+         * stock.
+         */
+        const projectQcPassedQuantity = Math.max(
+          Number(
+            matchingProjectRow?.qc_passed_quantity ??
+              matchingProjectRow?.qcPassedQuantity ??
+              0,
+          ) || 0,
+          Number(
+            sourceRow?.qc_passed_quantity ??
+              sourceRow?.qcPassedQuantity ??
+              0,
+          ) || 0,
+          qcPassedFromItems,
+        );
+
+        const projectPurchasedQuantity = Math.max(
+          Number(
+            matchingProjectRow?.purchased_quantity ??
+              matchingProjectRow?.purchasedQuantity ??
+              0,
+          ) || 0,
+          Number(
+            sourceRow?.purchased_quantity ??
+              sourceRow?.purchasedQuantity ??
+              0,
+          ) || 0,
+          isRetailSalesRequest
+            ? projectQcPassedQuantity
+            : 0,
+        );
+
         const procurementRequirement = Math.max(
           requestedQuantity - reservedStoreQuantity,
           0,
@@ -1419,12 +1494,10 @@ export default function InventoryNotifications() {
 
         const purchasedReadyQuantity = Math.min(
           procurementRequirement,
-          matchingProjectRow
-            ? Math.max(Number(matchingProjectRow.purchased_quantity || 0), 0)
-            : Math.max(
-                Number(sourceRow.purchased_quantity || 0),
-                qcPassedFromItems,
-              ),
+          Math.max(
+            projectPurchasedQuantity,
+            projectQcPassedQuantity,
+          ),
         );
 
         const issuedStoreQuantity = Math.max(
@@ -1459,11 +1532,32 @@ export default function InventoryNotifications() {
           0,
         );
 
-        const remainingPurchasedQuantity = Math.max(
+        const calculatedRemainingPurchasedQuantity =
+          Math.max(
+            purchasedReadyQuantity -
+              issuedPurchasedQuantity,
+            0,
+          );
+
+        const explicitRemainingPurchasedQuantity =
           Number(
             matchingProjectRow?.remaining_purchased_quantity ??
-              purchasedReadyQuantity - issuedPurchasedQuantity,
-          ),
+              sourceRow?.remaining_purchased_quantity,
+          );
+
+        const remainingPurchasedQuantity = Math.max(
+          Number.isFinite(
+            explicitRemainingPurchasedQuantity,
+          )
+            ? (
+                isRetailSalesRequest
+                  ? Math.max(
+                      explicitRemainingPurchasedQuantity,
+                      calculatedRemainingPurchasedQuantity,
+                    )
+                  : explicitRemainingPurchasedQuantity
+              )
+            : calculatedRemainingPurchasedQuantity,
           0,
         );
 
@@ -1474,8 +1568,18 @@ export default function InventoryNotifications() {
 
         const availablePurchasedSerials = normalizeSerials(
           matchingProjectRow?.available_purchased_serials ||
-            sourceRow.available_purchased_serials ||
+            sourceRow?.available_purchased_serials ||
+            matchingProjectRow?.purchased_serial_numbers ||
+            sourceRow?.purchased_serial_numbers ||
+            requestItem?.purchased_serial_numbers ||
             [],
+        ).filter(
+          (serial) =>
+            !normalizeSerials(
+              matchingProjectRow?.issued_purchased_serials ||
+                sourceRow?.issued_purchased_serials ||
+                [],
+            ).includes(serial),
         );
         const availableStoreSerials = normalizeSerials(
           matchingProjectRow?.available_store_serials ||
