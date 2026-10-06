@@ -522,15 +522,63 @@ export default function FinanceNotifications() {
         ""
     ).trim();
 
-  const getPOStatus = (po = {}, notification = {}) =>
-    String(
-      po.approval_status ||
-        po.status ||
-        notification.status ||
-        ""
+  const getPOStatus = (po = {}, notification = {}) => {
+    const notificationStatus = String(
+      notification?.status ||
+        notification?.approval_status ||
+        "",
     )
       .trim()
       .toUpperCase();
+
+    const poApprovalStatus = String(
+      po?.approval_status ||
+        "",
+    )
+      .trim()
+      .toUpperCase();
+
+    const poStatus = String(
+      po?.status ||
+        "",
+    )
+      .trim()
+      .toUpperCase();
+
+    /*
+     * Finance completion is terminal for the Finance notification UI.
+     *
+     * After Finance approves/rejects, a cached PO detail can briefly still
+     * contain PENDING_FINANCE. Never allow that stale value to restore the
+     * Finance Approve / Finance Reject buttons.
+     */
+    const completedFinanceStatuses = [
+      "FINANCE_APPROVED",
+      "FINANCE_REJECTED",
+      "REPLACEMENT_FINANCE_APPROVED",
+      "REPLACEMENT_FINANCE_REJECTED",
+      "REPLACEMENT_APPROVED",
+    ];
+
+    if (completedFinanceStatuses.includes(notificationStatus)) {
+      return notificationStatus;
+    }
+
+    if (completedFinanceStatuses.includes(poApprovalStatus)) {
+      return poApprovalStatus;
+    }
+
+    if (completedFinanceStatuses.includes(poStatus)) {
+      return poStatus;
+    }
+
+    return (
+      poApprovalStatus ||
+      poStatus ||
+      notificationStatus ||
+      ""
+    );
+  };
 
   const getPOItemUnitPrice = (item = {}) =>
     Number(
@@ -1756,6 +1804,13 @@ export default function FinanceNotifications() {
         );
       }
 
+      /*
+       * Finance approval/rejection is now authoritative.
+       * Clear cached PO detail before any event-driven refresh so an old
+       * PENDING_FINANCE payload cannot bring Approve/Reject back.
+       */
+      invalidateNotificationLoadingCache();
+
       window.dispatchEvent(
         new Event(
           "procurementUpdated"
@@ -1767,6 +1822,20 @@ export default function FinanceNotifications() {
           "notificationsUpdated"
         )
       );
+
+      /*
+       * Reconcile with completely fresh backend data.
+       * This keeps the processed row on Remove after approval/rejection.
+       */
+      void loadNotifications({
+        showLoader: false,
+        forceRefresh: true,
+      }).catch((refreshError) => {
+        console.warn(
+          "Unable to refresh Finance PO notification after processing:",
+          refreshError,
+        );
+      });
 
       return true;
     } catch (err) {

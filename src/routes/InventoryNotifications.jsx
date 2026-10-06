@@ -615,6 +615,9 @@ export default function InventoryNotifications() {
   const [successMessage, setSuccessMessage] = useState("");
   const activeIssueRequestsRef = useRef(new Set());
   const notificationLoadSequenceRef = useRef(0);
+  // A completed POST is authoritative while cached list responses catch up.
+  const completedIssueMrIdsRef = useRef(new Set());
+  const removedCompletedMrIdsRef = useRef(new Set());
 
   const [mrDetailsModal, setMrDetailsModal] = useState({
     open: false,
@@ -644,8 +647,10 @@ export default function InventoryNotifications() {
     const refreshQuery = fresh
       ? `&_refresh=${Date.now()}-${loadSequence}`
       : "";
-    if (!silent) setLoading(true);
-    setErrorMessage("");
+    if (!silent) {
+      setLoading(true);
+      setErrorMessage("");
+    }
 
     try {
       const [
@@ -983,12 +988,31 @@ export default function InventoryNotifications() {
               },
             );
 
+          const mrKey = String(
+            materialRequest.id ?? notification.reference_id,
+          );
+          const completedLocally =
+            completedIssueMrIdsRef.current.has(mrKey);
+
           return {
             ...notification,
-            purchaseOrders:
-              linkedPurchaseOrders,
+            purchaseOrders: linkedPurchaseOrders,
+            ...(completedLocally
+              ? {
+                  status: "INVENTORY_ISSUED",
+                  allComponentsIssued: true,
+                  hasReadyToIssue: false,
+                  readyToIssueQuantity: 0,
+                }
+              : {}),
           };
         })
+        .filter(
+          (notification) =>
+            !removedCompletedMrIdsRef.current.has(
+              String(notification.mr?.id ?? notification.reference_id),
+            ),
+        )
         .sort((left, right) => {
           const leftDate = new Date(
             left.created_at ||
@@ -1256,7 +1280,7 @@ export default function InventoryNotifications() {
         fetchAuthenticatedJson(
           `/inventory/project-inventory/?source_mr_number=${encodeURIComponent(
             materialRequestReference,
-          )}${refreshQuery}`,
+          )}&include_store_serials=1${refreshQuery}`,
         ),
       ]);
 
@@ -1428,6 +1452,17 @@ export default function InventoryNotifications() {
           0,
         );
 
+        const availablePurchasedSerials = normalizeSerials(
+          matchingProjectRow?.available_purchased_serials ||
+            sourceRow.available_purchased_serials ||
+            [],
+        );
+        const availableStoreSerials = normalizeSerials(
+          matchingProjectRow?.available_store_serials ||
+            sourceRow.available_store_serials ||
+            [],
+        );
+
         /*
          * For a mixed Procurement MR, offer QC-passed quantity first.
          * After it is provided and the modal refreshes, the reserved
@@ -1445,6 +1480,7 @@ export default function InventoryNotifications() {
             ? Math.min(
                 remainingPurchasedQuantity,
                 remainingQuantity,
+                availablePurchasedSerials.length,
               )
             : 0;
 
@@ -1453,6 +1489,7 @@ export default function InventoryNotifications() {
             ? Math.min(
                 remainingStoreQuantity,
                 remainingQuantity,
+                availableStoreSerials.length,
               )
             : 0;
 
@@ -1513,26 +1550,16 @@ export default function InventoryNotifications() {
           remainingStoreQuantity,
           remainingPurchasedQuantity,
           remainingQuantity,
-          availablePurchasedSerials: normalizeSerials(
-            matchingProjectRow?.available_purchased_serials ||
-              sourceRow.available_purchased_serials ||
-              [],
+          availablePurchasedSerials,
+          availableStoreSerials,
+          selectedPurchasedSerials: availablePurchasedSerials.slice(
+            0,
+            defaultPurchasedQuantity,
           ),
-          availableStoreSerials: normalizeSerials(
-            matchingProjectRow?.available_store_serials ||
-              sourceRow.available_store_serials ||
-              [],
+          selectedStoreSerials: availableStoreSerials.slice(
+            0,
+            defaultStoreQuantity,
           ),
-          selectedPurchasedSerials: normalizeSerials(
-            matchingProjectRow?.available_purchased_serials ||
-              sourceRow.available_purchased_serials ||
-              [],
-          ).slice(0, defaultPurchasedQuantity),
-          selectedStoreSerials: normalizeSerials(
-            matchingProjectRow?.available_store_serials ||
-              sourceRow.available_store_serials ||
-              [],
-          ).slice(0, defaultStoreQuantity),
           providePurchasedQuantity:
             defaultPurchasedQuantity,
           provideStoreQuantity: defaultStoreQuantity,
@@ -1703,6 +1730,12 @@ export default function InventoryNotifications() {
     }
 
     const notificationId = String(notification.id);
+    const showIssueError = (message) => {
+      setErrorMessage(message);
+      setProvideModal((previous) =>
+        previous.open ? { ...previous, error: message } : previous,
+      );
+    };
     if (activeIssueRequestsRef.current.has(notificationId)) {
       return;
     }
@@ -1774,7 +1807,7 @@ export default function InventoryNotifications() {
     });
 
     if (duplicateAllocation) {
-      setErrorMessage(
+      showIssueError(
         "The same component source was added more than once. Close and reopen Provide Components, then try again.",
       );
       return;
@@ -1787,14 +1820,14 @@ export default function InventoryNotifications() {
     );
 
     if (invalidAllocation) {
-      setErrorMessage(
+      showIssueError(
         "Select one serial number for every component quantity being provided.",
       );
       return;
     }
 
     if (allocations.length === 0) {
-      setErrorMessage(
+      showIssueError(
         "Enter at least one quantity from QC Passed or In Store.",
       );
       return;
@@ -1810,6 +1843,7 @@ export default function InventoryNotifications() {
 
     setErrorMessage("");
     setSuccessMessage("");
+    setProvideModal((previous) => ({ ...previous, error: "" }));
 
     try {
       const responseData =
@@ -1897,8 +1931,14 @@ export default function InventoryNotifications() {
         0,
       );
 
-      // The POST response is authoritative. Change the notification action
-      // immediately instead of waiting for a cached list or the next poll.
+      // Keep completion through subsequent cached list responses. A fresh
+      // poll may still contain the status from before this successful POST.
+      if (completed) {
+        completedIssueMrIdsRef.current.add(
+          String(materialRequest.id ?? materialRequestReference),
+        );
+      }
+
       // Ignore a background list request that started before this POST.
       notificationLoadSequenceRef.current += 1;
       setNotifications((previous) =>
@@ -2079,7 +2119,7 @@ export default function InventoryNotifications() {
         setErrorMessage("");
         setSuccessMessage("This component is already issued. The current quantities are now displayed.");
       } else {
-        setErrorMessage(error?.message || "Unable to provide components.");
+        showIssueError(error?.message || "Unable to provide components.");
       }
     } finally {
       activeIssueRequestsRef.current.delete(notificationId);
@@ -2110,6 +2150,9 @@ export default function InventoryNotifications() {
         },
       );
 
+      const mrKey = String(notification.mr?.id ?? notification.reference_id);
+      completedIssueMrIdsRef.current.delete(mrKey);
+      removedCompletedMrIdsRef.current.add(mrKey);
       setNotifications((previous) =>
         previous.filter(
           (item) =>
@@ -2197,6 +2240,15 @@ export default function InventoryNotifications() {
     const status = normalizeStatus(notification.status);
     const notificationId = String(notification.id);
 
+    const requestType = normalizeStatus(
+      notification?.mr?.request_type ||
+        notification?.mr?.requestType ||
+        "",
+    );
+
+    const isRetailSales =
+      requestType === "RETAIL_SALES";
+
     const isProcessing =
       processingIds.includes(notificationId);
 
@@ -2229,7 +2281,10 @@ export default function InventoryNotifications() {
 
     if (
       ACTIONABLE_STATUSES.includes(status) &&
-      notification.hasReadyToIssue !== false
+      (
+        isRetailSales ||
+        notification.hasReadyToIssue !== false
+      )
     ) {
       return (
         <button
@@ -3039,13 +3094,6 @@ export default function InventoryNotifications() {
                 </p>
               </div>
 
-              <button
-                type="button"
-                onClick={closeProvideModal}
-                className="rounded-lg border px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900"
-              >
-                Close
-              </button>
             </div>
 
             {provideModal.error && (
@@ -3191,6 +3239,7 @@ export default function InventoryNotifications() {
                               max={Math.min(
                                 row.remainingPurchasedQuantity,
                                 row.remainingQuantity,
+                                row.availablePurchasedSerials.length,
                               )}
                               value={
                                 row.providePurchasedQuantity
@@ -3210,9 +3259,18 @@ export default function InventoryNotifications() {
                               className="w-24 rounded-lg border px-3 py-2 text-center disabled:cursor-not-allowed disabled:bg-slate-100"
                             />
                             <div className="mt-1 text-[11px] text-slate-500">
-                              Available:{" "}
-                              {row.remainingPurchasedQuantity}
+                              Available for issue:{" "}
+                              {Math.min(
+                                row.remainingPurchasedQuantity,
+                                row.availablePurchasedSerials.length,
+                              )}
                             </div>
+                            {row.remainingPurchasedQuantity > 0 &&
+                              row.availablePurchasedSerials.length === 0 && (
+                                <div className="mt-1 text-xs text-red-600">
+                                  No QC serials are available. Check QC stock and reopen this popup.
+                                </div>
+                              )}
                             <details className="mt-2 text-left">
                               <summary className="cursor-pointer text-xs font-medium text-blue-600">
                                 QC serials ({row.selectedPurchasedSerials.length} selected)
@@ -3234,7 +3292,7 @@ export default function InventoryNotifications() {
                                     </label>
                                   ))
                                 ) : (
-                                  <span className="text-xs text-red-600">No QC serials available.</span>
+                                  <span className="text-xs text-red-600">No QC serials available for issue.</span>
                                 )}
                               </div>
                             </details>
@@ -3251,6 +3309,7 @@ export default function InventoryNotifications() {
                                     proposedPurchased,
                                   0,
                                 ),
+                                row.availableStoreSerials.length,
                               )}
                               value={row.provideStoreQuantity}
                               disabled={
@@ -3271,6 +3330,12 @@ export default function InventoryNotifications() {
                               Reserved left:{" "}
                               {row.remainingStoreQuantity}
                             </div>
+                            {row.remainingStoreQuantity > 0 &&
+                              row.availableStoreSerials.length === 0 && (
+                                <div className="mt-1 text-xs text-red-600">
+                                  No In-Store serials are available. Check stock and reopen this popup.
+                                </div>
+                              )}
                             <details className="mt-2 text-left">
                               <summary className="cursor-pointer text-xs font-medium text-blue-600">
                                 In-Store serials ({row.selectedStoreSerials.length} selected)
@@ -3292,7 +3357,7 @@ export default function InventoryNotifications() {
                                     </label>
                                   ))
                                 ) : (
-                                  <span className="text-xs text-red-600">No In-Store serials available.</span>
+                                  <span className="text-xs text-red-600">No In-Store serials available for issue.</span>
                                 )}
                               </div>
                             </details>

@@ -18789,6 +18789,17 @@ const getRowsForCurrentTab = () => {
                     const totalDroneQuantity =
                       getInDroneTotalDroneQuantity(row);
 
+                    const requestType = String(
+                      row?.request_type ||
+                        row?.requestType ||
+                        "",
+                    )
+                      .trim()
+                      .toUpperCase();
+
+                    const isRetailSales =
+                      requestType === "RETAIL_SALES";
+
                     const returnableHistory =
                       Array.isArray(
                         row?.inDroneReturnableHistory,
@@ -18813,6 +18824,13 @@ const getRowsForCurrentTab = () => {
                       soldQty >= totalDroneQuantity;
 
                     const statusBadges = [
+                      isRetailSales
+                        ? {
+                            label: "Retail Sold",
+                            className:
+                              "border-emerald-200 bg-emerald-50 text-emerald-700",
+                          }
+                        : null,
                       row?.inDroneHasEngineerScrap
                         ? {
                             label:
@@ -18900,7 +18918,8 @@ const getRowsForCurrentTab = () => {
                           </div>
                         )}
 
-                        {!row?.inDroneScrapSaleBlocked &&
+                        {!isRetailSales &&
+                          !row?.inDroneScrapSaleBlocked &&
                           !isFullySold &&
                           availableQuantity > 0 &&
                           canStartInDroneSale && (
@@ -18923,7 +18942,8 @@ const getRowsForCurrentTab = () => {
                             </button>
                           )}
 
-                        {!row?.inDroneScrapSaleBlocked &&
+                        {!isRetailSales &&
+                          !row?.inDroneScrapSaleBlocked &&
                           !statusBadges.length &&
                           (!canStartInDroneSale ||
                             availableQuantity <= 0) && (

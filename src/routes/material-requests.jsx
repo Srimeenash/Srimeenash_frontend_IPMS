@@ -1,5 +1,5 @@
 import { useCostDetails } from "@/components/app/SerialCostDetails";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 // Material Requests page, including From Scrap source project/BOM resolution.
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { PageShell, PageHeader } from "@/components/app/PageShell";
@@ -759,6 +759,13 @@ function MaterialRequestsPage() {
   const [requestsError, setRequestsError] = useState("");
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [selectionMode, setSelectionMode] = useState(false);
+  const [deletingRows, setDeletingRows] = useState(false);
+  const [deleteProgress, setDeleteProgress] = useState({ completed: 0, total: 0 });
+  const [deleteFeedback, setDeleteFeedback] = useState(null);
+  const deletingRowsRef = useRef(false);
+  // A list request started before the DELETE may resolve afterward. Never put
+  // already deleted rows back on screen while a fresh list is loading.
+  const deletedMrIdsRef = useRef(new Set());
   const [selectedBOM, setSelectedBOM] = useState(null);
   const [showBomModal, setShowBomModal] = useState(false);
   const [bomDetails, setBomDetails] = useState(null);
@@ -5690,107 +5697,100 @@ function MaterialRequestsPage() {
   }
 
   const handleDeleteSelected = async () => {
-    if (!canAdministerMR) {
+    if (!canAdministerMR || deletingRowsRef.current) return;
+
+    const ids = [...new Set(selectedRowKeys.map(String))];
+    if (!ids.length) return;
+
+    if (!window.confirm(`Delete ${ids.length} selected Material Request(s)?`)) {
       return;
     }
 
-    if (!selectedRowKeys.length) return;
+    deletingRowsRef.current = true;
+    setDeletingRows(true);
+    setDeleteProgress({ completed: 0, total: ids.length });
+    setDeleteFeedback(null);
 
-    const confirmed = window.confirm(
-      `Delete ${selectedRowKeys.length} selected Material Request(s)?`
-    );
+    try {
+      const results = new Array(ids.length);
+      let nextIndex = 0;
 
-    if (!confirmed) return;
-
-    const results = await Promise.all(
-      selectedRowKeys.map(async (id) => {
-        try {
-          const responseData =
-            await fetchAuthenticatedJson(
-              `${config.baseURL}/materialrequest/material-requests/${encodeURIComponent(
-                id
-              )}/`,
-              {
-                method: "DELETE",
-              },
+      // Keep at most two deletes in flight to avoid competing database locks
+      // when each MR has linked purchase orders, inventory and notifications.
+      const worker = async () => {
+        while (nextIndex < ids.length) {
+          const index = nextIndex++;
+          const id = ids[index];
+          try {
+            const responseData = await fetchAuthenticatedJson(
+              `${config.baseURL}/materialrequest/material-requests/${encodeURIComponent(id)}/`,
+              { method: "DELETE" },
             );
-
-          return {
-            id: String(id),
-            success: true,
-            status: 200,
-            message:
-              responseData?.detail ||
-              "Deleted successfully.",
-          };
-        } catch (error) {
-          return {
-            id: String(id),
-            success: false,
-            status: 0,
-            message:
-              error?.message ||
-              "Unable to reach the backend.",
-          };
+            deletedMrIdsRef.current.add(id);
+            setRows((currentRows) =>
+              currentRows.filter((row) => String(row.id) !== id),
+            );
+            setMaterialRequestsTotalCount((count) => Math.max(0, count - 1));
+            results[index] = {
+              id,
+              success: true,
+              message: responseData?.detail || "Deleted successfully.",
+            };
+          } catch (error) {
+            results[index] = {
+              id,
+              success: false,
+              message: error?.message || "Unable to delete this request.",
+            };
+          } finally {
+            setDeleteProgress((progress) => ({
+              ...progress,
+              completed: progress.completed + 1,
+            }));
+          }
         }
-      })
-    );
+      };
 
-    const successfulResults = results.filter(
-      (result) => result.success
-    );
-
-    const failedResults = results.filter(
-      (result) => !result.success
-    );
-
-    if (successfulResults.length) {
-      window.dispatchEvent(
-        new Event("notificationsUpdated")
+      await Promise.all(
+        Array.from({ length: Math.min(2, ids.length) }, () => worker()),
       );
+
+      const deleted = results.filter((result) => result.success);
+      const failed = results.filter((result) => !result.success);
+
+      if (deleted.length) {
+        window.dispatchEvent(new Event("notificationsUpdated"));
+        // The backend invalidates its MR list cache after a successful delete.
+        // Refresh in the background so the user is not stuck waiting for it.
+        void loadRequests({ silent: true });
+      }
+
+      if (failed.length) {
+        setSelectedRowKeys(failed.map((result) => result.id));
+        setSelectionMode(true);
+        setDeleteFeedback({
+          type: "error",
+          message: `${deleted.length} deleted; ${failed.length} could not be deleted. ${failed
+            .map((result) => `MR database ID ${result.id}: ${result.message}`)
+            .join(" • ")}`,
+        });
+        console.error("Material Request deletion failures:", failed);
+      } else {
+        setSelectedRowKeys([]);
+        setSelectionMode(false);
+        setDeleteFeedback({
+          type: "success",
+          message: `${deleted.length} Material Request(s) deleted successfully.`,
+        });
+      }
+    } finally {
+      deletingRowsRef.current = false;
+      setDeletingRows(false);
     }
-
-    await loadRequests();
-
-    if (failedResults.length) {
-      const failedIds = failedResults.map(
-        (result) => result.id
-      );
-
-      setSelectedRowKeys(failedIds);
-      setSelectionMode(true);
-
-      const failureMessage = failedResults
-        .map(
-          (result) =>
-            `MR database ID ${result.id}: ${result.message}`
-        )
-        .join("\\n");
-
-      alert(
-        `${successfulResults.length} request(s) deleted. ` +
-          `${failedResults.length} request(s) could not be deleted.\\n\\n` +
-          failureMessage
-      );
-
-      console.error(
-        "Material Request deletion failures:",
-        failedResults
-      );
-
-      return;
-    }
-
-    setSelectedRowKeys([]);
-    setSelectionMode(false);
-
-    alert(
-      `${successfulResults.length} Material Request(s) deleted successfully.`
-    );
   };
 
   const handleDeleteMode = () => {
-    if (!canManageMR) {
+    if (!canAdministerMR || deletingRowsRef.current) {
       return;
     }
 
@@ -5799,6 +5799,7 @@ function MaterialRequestsPage() {
   };
 
   const handleCancelDeleteMode = () => {
+    if (deletingRowsRef.current) return;
     setSelectedRowKeys([]);
     setSelectionMode(false);
   };
@@ -5812,8 +5813,8 @@ function MaterialRequestsPage() {
     debouncedMaterialRequestsColumnFilters,
   ]);
 
-  const loadRequests = async () => {
-    setRequestsLoading(true);
+  const loadRequests = async ({ silent = false } = {}) => {
+    if (!silent) setRequestsLoading(true);
     setRequestsError("");
 
     try {
@@ -6332,7 +6333,9 @@ const displayReadyRequests =
        * DRONE Returnable source visibility is already handled by Django
        * before Material Request pagination.
        */
-      const visibleRequests = normalized;
+      const visibleRequests = normalized.filter(
+        (request) => !deletedMrIdsRef.current.has(String(request.id)),
+      );
       setRows(visibleRequests);
 
       /*
@@ -6428,14 +6431,16 @@ const displayReadyRequests =
       }
     } catch (err) {
       console.error("Failed to load requests:", err);
-      setRows([]);
-      setEngineerReturnUsageByMr({});
+      if (!silent) {
+        setRows([]);
+        setEngineerReturnUsageByMr({});
+      }
       setRequestsError(
         err?.message ||
           "Unable to load Material Requests. Please try again."
       );
     } finally {
-      setRequestsLoading(false);
+      if (!silent) setRequestsLoading(false);
     }
   };
 
@@ -7633,17 +7638,20 @@ const canRequestApproval = (request) => {
               {canAdministerMR && <button
                 type="button"
                 onClick={selectionMode ? handleDeleteSelected : handleDeleteMode}
-                disabled={selectionMode && selectedRowKeys.length === 0}
+                disabled={deletingRows || (selectionMode && selectedRowKeys.length === 0)}
                 className="inline-flex items-center gap-2 rounded-lg bg-destructive px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-[#d94a65] disabled:cursor-not-allowed disabled:opacity-50"
                 style={{ backgroundColor: "#E85D75" }}
               >
-                {selectionMode ? `Delete Selected (${selectedRowKeys.length})` : "Delete"}
+                {deletingRows ? (
+                  <><Loader2 className="mr-2 size-4 animate-spin" />Deleting {deleteProgress.completed}/{deleteProgress.total}...</>
+                ) : selectionMode ? `Delete Selected (${selectedRowKeys.length})` : "Delete"}
               </button>}
 
               {selectionMode && (
                 <button
                   type="button"
                   onClick={handleCancelDeleteMode}
+                  disabled={deletingRows}
                   className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-secondary"
                 >
                   Cancel
@@ -7764,6 +7772,19 @@ const canRequestApproval = (request) => {
         `}</style>
 
         <div className="relative">
+        {selectionMode && !deletingRows && (
+          <p className="px-4 py-2 text-sm text-muted-foreground">
+            Select the MR rows, then click Delete Selected.
+          </p>
+        )}
+        {deleteFeedback && (
+          <div role={deleteFeedback.type === "error" ? "alert" : "status"}
+            className={`mx-4 my-2 rounded-lg border px-4 py-3 text-sm ${deleteFeedback.type === "error"
+              ? "border-rose-200 bg-rose-50 text-rose-700"
+              : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
+            {deleteFeedback.message}
+          </div>
+        )}
         <DataTable
           enableColumnTools
 columns={[...([
