@@ -3031,7 +3031,6 @@ export default function FinanceNotifications() {
         <div className="w-full overflow-hidden rounded-2xl border border-border bg-card shadow-sm dark:border-slate-700 dark:bg-slate-950">
           <div className="w-full">
             <div className="grid grid-cols-[0.36fr_0.72fr_1.15fr_0.45fr_1.15fr_0.45fr_0.58fr_0.85fr_0.68fr_1fr_0.7fr_1.55fr] items-center border-b border-slate-200 bg-slate-100 px-1.5 py-2.5 text-[10px] font-semibold uppercase text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
-                      <div className="text-center font-semibold">{index + 1}</div>
               <div className="text-center">S.No</div>
               <div className="text-center">Requested By</div>
               <div className="text-center">Scrap Component</div>
@@ -3241,6 +3240,7 @@ export default function FinanceNotifications() {
                       }
                       className="grid grid-cols-[0.36fr_0.72fr_1.15fr_0.45fr_1.15fr_0.45fr_0.58fr_0.85fr_0.68fr_1fr_0.7fr_1.55fr] items-center px-1.5 py-2.5 transition-colors hover:bg-slate-50 dark:hover:bg-slate-900"
                     >
+                      <div className="text-center font-semibold">{index + 1}</div>
                       <div className="px-1 text-center text-sm font-medium">
                         {cleanScrapRequesterName(
                           getScrapRequestedBy(
