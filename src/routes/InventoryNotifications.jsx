@@ -1297,23 +1297,21 @@ export default function InventoryNotifications() {
        * reached QC_CHECKED but ProjectInventory still contained zero
        * purchased/QC-ready quantity.
        */
-      const refreshedProjectData =
-        await fetchAuthenticatedJson(
-          "/inventory/project-inventory/refresh-mr/",
-          {
-            method: "POST",
-            body: JSON.stringify({
-              material_request_id:
-                materialRequestReference,
-            }),
-          },
-        ).catch((error) => {
-          console.warn(
-            "Project Inventory refresh failed; falling back to current rows:",
-            error,
-          );
-          return null;
-        });
+      await fetchAuthenticatedJson(
+        "/inventory/project-inventory/refresh-mr/",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            material_request_id:
+              materialRequestReference,
+          }),
+        },
+      ).catch((error) => {
+        console.warn(
+          "Project Inventory refresh failed; loading the current rows:",
+          error,
+        );
+      });
 
       const [
         detail,
@@ -1323,21 +1321,23 @@ export default function InventoryNotifications() {
           `/materialrequest/material-requests/${materialRequestId}/`,
           { cache: "no-store" },
         ),
-        refreshedProjectData
-          ? Promise.resolve(
-              refreshedProjectData?.project_inventory ||
-                refreshedProjectData,
-            )
-          : fetchAuthenticatedJson(
-              `/inventory/project-inventory/?source_mr_number=${encodeURIComponent(
-                materialRequestReference,
-              )}&include_store_serials=1${refreshQuery}`,
-            ),
+        fetchAuthenticatedJson(
+          `/inventory/project-inventory/?source_mr_number=${encodeURIComponent(
+            materialRequestReference,
+          )}&include_store_serials=1${refreshQuery}`,
+          { cache: "no-store" },
+        ),
       ]);
 
       const projectRows = toList(projectData);
       const requestItems = getRequestItems(detail);
-      const routeStatus = normalizeStatus(notification.status);
+      const routeStatus = normalizeStatus(
+        detail?.status ||
+          detail?.workflow_status ||
+          materialRequest?.status ||
+          materialRequest?.workflow_status ||
+          notification.status,
+      );
       const detailRequestType = normalizeStatus(
         detail?.request_type ||
           materialRequest?.request_type ||
@@ -2374,6 +2374,15 @@ export default function InventoryNotifications() {
 
     const isRetailSales =
       requestType === "RETAIL_SALES";
+    const actionStatus = isRetailSales
+      ? ["INVENTORY_ISSUED", "MR_COMPLETED"].includes(status)
+        ? status
+        : normalizeStatus(
+            notification?.mr?.status ||
+              notification?.mr?.workflow_status ||
+              status,
+          )
+      : status;
 
     const isProcessing =
       processingIds.includes(notificationId);
@@ -2395,7 +2404,7 @@ export default function InventoryNotifications() {
         "INVENTORY_PENDING",
         "QC_CHECKED",
         "PROJECT_INVENTORY_READY",
-      ].includes(status)
+      ].includes(actionStatus)
     ) {
       return (
         <button
@@ -2420,8 +2429,8 @@ export default function InventoryNotifications() {
      */
     if (
       notification.allComponentsIssued === true ||
-      status === "INVENTORY_ISSUED" ||
-      status === "MR_COMPLETED"
+      actionStatus === "INVENTORY_ISSUED" ||
+      actionStatus === "MR_COMPLETED"
     ) {
       const isRemoving =
         removingIds.includes(notificationId);
@@ -2441,7 +2450,7 @@ export default function InventoryNotifications() {
     }
 
     if (
-      ACTIONABLE_STATUSES.includes(status) &&
+      ACTIONABLE_STATUSES.includes(actionStatus) &&
       notification.hasReadyToIssue !== false
     ) {
       return (
