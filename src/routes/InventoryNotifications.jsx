@@ -65,11 +65,31 @@ const getRequestItems = (materialRequest) => {
       : [];
   }
 
-  return Array.isArray(materialRequest?.rd_items)
-    ? materialRequest.rd_items
-    : Array.isArray(materialRequest?.bom_items)
-      ? materialRequest.bom_items
+  if (
+    requestType === "RETAIL_SALES" ||
+    requestType === "RETURNABLE"
+  ) {
+    return Array.isArray(materialRequest?.request_items)
+      ? materialRequest.request_items
       : [];
+  }
+
+  if (
+    requestType === "R&D" ||
+    requestType === "RD"
+  ) {
+    return Array.isArray(materialRequest?.rd_items)
+      ? materialRequest.rd_items
+      : [];
+  }
+
+  return Array.isArray(materialRequest?.request_items)
+    ? materialRequest.request_items
+    : Array.isArray(materialRequest?.rd_items)
+      ? materialRequest.rd_items
+      : Array.isArray(materialRequest?.bom_items)
+        ? materialRequest.bom_items
+        : [];
 };
 
 const addComponentIdentityKey = (keys, candidate) => {
@@ -2243,6 +2263,8 @@ export default function InventoryNotifications() {
     const requestType = normalizeStatus(
       notification?.mr?.request_type ||
         notification?.mr?.requestType ||
+        notification?.request_type ||
+        notification?.requestType ||
         "",
     );
 
@@ -2251,6 +2273,41 @@ export default function InventoryNotifications() {
 
     const isProcessing =
       processingIds.includes(notificationId);
+
+    /*
+     * RETAIL SALES:
+     *
+     * Once the row reaches Inventory with store-ready stock or QC-passed
+     * purchased stock, always allow Inventory to open Provide Components.
+     *
+     * Do this BEFORE the generic lifecycle/hasReadyToIssue rule because some
+     * Retail Sales ProjectInventory rows do not expose ready quantities in the
+     * same shape as BOM/R&D, even though the workflow status is already ready.
+     */
+    if (
+      isRetailSales &&
+      [
+        "MANAGER_APPROVED",
+        "INVENTORY_PENDING",
+        "QC_CHECKED",
+        "PROJECT_INVENTORY_READY",
+      ].includes(status)
+    ) {
+      return (
+        <button
+          type="button"
+          disabled={isProcessing}
+          onClick={() =>
+            openProvideComponents(notification)
+          }
+          className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed text-white text-sm font-medium"
+        >
+          {isProcessing
+            ? "Providing..."
+            : "Provide Components"}
+        </button>
+      );
+    }
 
     /*
      * After every component is issued, keep the completed notification
@@ -2281,10 +2338,7 @@ export default function InventoryNotifications() {
 
     if (
       ACTIONABLE_STATUSES.includes(status) &&
-      (
-        isRetailSales ||
-        notification.hasReadyToIssue !== false
-      )
+      notification.hasReadyToIssue !== false
     ) {
       return (
         <button
