@@ -875,6 +875,14 @@ export default function Page() {
                       <Field label="Start Date">
                         <Input
                           type="date"
+                          onClick={(event) => {
+                            if (
+                              typeof event.currentTarget.showPicker ===
+                              "function"
+                            ) {
+                              event.currentTarget.showPicker();
+                            }
+                          }}
                           name="start_date"
                           value={form.start_date}
                           onChange={handleChange}
@@ -884,6 +892,14 @@ export default function Page() {
                       <Field label="End Date">
                         <Input
                           type="date"
+                          onClick={(event) => {
+                            if (
+                              typeof event.currentTarget.showPicker ===
+                              "function"
+                            ) {
+                              event.currentTarget.showPicker();
+                            }
+                          }}
                           name="end_date"
                           value={form.end_date}
                           onChange={handleChange}

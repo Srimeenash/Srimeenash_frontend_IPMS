@@ -20595,6 +20595,14 @@ const getRowsForCurrentTab = () => {
                           </label>
                           <input
                             type="date"
+                            onClick={(event) => {
+                              if (
+                                typeof event.currentTarget.showPicker ===
+                                "function"
+                              ) {
+                                event.currentTarget.showPicker();
+                              }
+                            }}
                             value={newInventory.date}
                             onChange={(event) =>
                               setNewInventory(

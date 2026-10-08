@@ -1201,6 +1201,11 @@ const PurchaseOrdersPage = () => {
                         }),
                         _jsx(Input, {
                           type: "date",
+                          onClick: (event) => {
+                            if (typeof event.currentTarget.showPicker === "function") {
+                              event.currentTarget.showPicker();
+                            }
+                          },
                           name: "poDate",
                           value: formData.poDate,
                           onChange: handleInputChange,
@@ -1218,6 +1223,11 @@ const PurchaseOrdersPage = () => {
                         }),
                         _jsx(Input, {
                           type: "date",
+                          onClick: (event) => {
+                            if (typeof event.currentTarget.showPicker === "function") {
+                              event.currentTarget.showPicker();
+                            }
+                          },
                           name: "expected_delivery_date",
                           value: formData.expected_delivery_date,
                           onChange: handleInputChange,

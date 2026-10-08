@@ -3601,6 +3601,14 @@ async function handleSubmit(e) {
           <Field label="Date" required>
             <Input
               type="date"
+              onClick={(event) => {
+                if (
+                  typeof event.currentTarget.showPicker ===
+                  "function"
+                ) {
+                  event.currentTarget.showPicker();
+                }
+              }}
               name="date"
               value={form.date}
               onChange={(event) => {
@@ -4122,6 +4130,14 @@ async function handleSubmit(e) {
           <Field label="Required Date" required>
             <Input
               type="date"
+              onClick={(event) => {
+                if (
+                  typeof event.currentTarget.showPicker ===
+                  "function"
+                ) {
+                  event.currentTarget.showPicker();
+                }
+              }}
               name="required_date"
               min={form.date || undefined}
               value={form.required_date}
@@ -4213,6 +4229,14 @@ async function handleSubmit(e) {
             <Field label="Returnable Date" required>
               <Input
                 type="date"
+              onClick={(event) => {
+                if (
+                  typeof event.currentTarget.showPicker ===
+                  "function"
+                ) {
+                  event.currentTarget.showPicker();
+                }
+              }}
                 name="returnable_date"
                 min={
                   form.required_date ||
