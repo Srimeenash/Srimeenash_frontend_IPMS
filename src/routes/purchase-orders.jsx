@@ -103,7 +103,7 @@ function Page() {
   const { user } = useAuth();
 
   // Sidebar/routes decide who can SEE Purchase Orders.
-  // Only Admin + Procurement can CREATE / DELETE / CHANGE PO data.
+  // Admin, Procurement and Inventory can work on Purchase Orders.
   const canManagePO =
     canWork(user, "purchase-order");
 
@@ -126,6 +126,7 @@ function Page() {
 
   const isProcurementRole =
     activeRole === "procurement" ||
+    activeRole === "inventory" ||
     activeRole === "admin";
 
   const [purchaseOrders, setPurchaseOrders] = useState([]);

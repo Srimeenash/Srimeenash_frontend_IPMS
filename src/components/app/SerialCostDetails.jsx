@@ -2143,20 +2143,18 @@ function referencesFor(
   }
 
 
-  if (
-    kind === "inventory" &&
-    row.backendIds?.length
-  ) {
+  if (kind === "inventory") {
+    // One displayed component can combine multiple physical receipts.
+    const ids = unique([
+      ...(Array.isArray(row.backendIds) ? row.backendIds : []),
+      ...(Array.isArray(row.stockLocations)
+        ? row.stockLocations.map((stock) => stock.id)
+        : []),
+      row.backendId,
+      row.id,
+    ]).map(String).filter((id) => /^\d+$/.test(id));
 
-    return unique(
-      row.backendIds
-    ).map(
-      (id) => ({
-        kind,
-        id:
-          String(id),
-      })
-    );
+    return Array.from(new Set(ids)).map((id) => ({ kind, id }));
   }
 
 
@@ -2555,6 +2553,31 @@ function StockCostDetails({
                       );
                   }
 
+
+                  if (reference.kind === "inventory") {
+                    const receiptCode = String(record.inventory_code || "").trim();
+                    const receiptType = record.legacy_source_key
+                      ? "Imported stock"
+                      : /^INW[-_]/i.test(receiptCode)
+                        ? "PO receipt"
+                        : "Add Stocks";
+                    const receiptLabel = [receiptType, receiptCode].filter(Boolean).join(" · ");
+
+                    // Show the saved quantities and costs from each receipt
+                    // separately even when the Inventory table combines them.
+                    record = {
+                      ...record,
+                      cost_details: (Array.isArray(record.cost_details)
+                        ? record.cost_details
+                        : []
+                      ).map((group) => ({
+                        ...group,
+                        cost_source_key: `inventory:${reference.id}`,
+                        cost_source_label: receiptLabel,
+                        cost_source_type: receiptType,
+                      })),
+                    };
+                  }
 
                   /* =======================================
                      IN DRONE

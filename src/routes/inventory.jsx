@@ -8226,6 +8226,36 @@ serials_list: manualSerials.length ? manualSerials : buildManualInventorySerials
       existing.totalPrice = Number(existing.totalPrice ?? 0) + totalPrice;
       existing.price = existing.qty > 0 ? existing.totalPrice / existing.qty : unitPrice || existing.price;
 
+      // Keep each Inventory receipt behind this combined table row. The
+      // Add Stocks receipt and PO/Inward receipt can have different prices.
+      const receiptIds = (row) => [
+        ...(Array.isArray(row.backendIds) ? row.backendIds : []),
+        row.backendId,
+        ...(Array.isArray(row.stockLocations)
+          ? row.stockLocations.map((stock) => stock.id)
+          : []),
+      ]
+        .map((id) => String(id ?? "").trim())
+        .filter((id) => /^\d+$/.test(id));
+      existing.backendIds = Array.from(new Set([
+        ...receiptIds(existing),
+        ...receiptIds(item),
+      ]));
+      existing.stockLocations = [
+        ...(Array.isArray(existing.stockLocations) ? existing.stockLocations : []),
+        ...(Array.isArray(item.stockLocations) ? item.stockLocations : []),
+      ].filter((stock, index, locations) =>
+        locations.findIndex((candidate) =>
+          String(candidate.id ?? candidate.code) === String(stock.id ?? stock.code),
+        ) === index,
+      );
+      existing.serials = Array.from(new Set([
+        ...splitInventorySerials(existing.serials || []),
+        ...splitInventorySerials(item.serials || []),
+      ]));
+      existing.serials_list = existing.serials;
+      existing.serialNumber = existing.serials.join(", ") || "-";
+
       if (!existing.component && item.component) existing.component = item.component;
       if (!existing.category && item.category) existing.category = item.category;
       if (!existing.specifications && item.specifications) existing.specifications = item.specifications;

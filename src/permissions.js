@@ -67,6 +67,7 @@ const WORK_MODULES = {
     "inventory",
   ],
   inventory: [
+    "purchase-order",
     "inventory",
     "component-usage",
     "outward",

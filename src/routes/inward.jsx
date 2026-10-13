@@ -553,6 +553,36 @@ async function loadAllData() {
           entry.hsn ||
           "-";
 
+        const componentSpecification = [
+          entryComponent?.specifications,
+          entryComponent?.specification,
+          entry.component_specifications,
+          entry.component_specification,
+          entry.specifications,
+          entry.specification,
+        ]
+          .map((value) => String(value ?? "").trim())
+          .find(Boolean);
+
+        const inwardLineSpecifications = Array.isArray(entry.line_items)
+          ? [
+              ...new Set(
+                entry.line_items
+                  .map((item) =>
+                    String(
+                      item.specification || item.specifications || ""
+                    ).trim()
+                  )
+                  .filter(Boolean)
+              ),
+            ]
+          : [];
+
+        const entrySpecification =
+          componentSpecification ||
+          inwardLineSpecifications.join(", ") ||
+          "-";
+
         const componentTypes = Array.isArray(entry.line_items)
           ? [
               ...new Set(
@@ -631,6 +661,8 @@ return {
     String(entryComponentType || "").trim() ||
     componentTypes.join(", ") ||
     "-",
+
+  specification: entrySpecification,
 
   hsnNo: entryHsnNo,
 
@@ -1173,6 +1205,15 @@ async function submitVendor(e) {
       return;
     }
 
+    const specification = String(
+      componentForm.specifications || ""
+    ).trim();
+
+    if (!specification) {
+      alert("Specification is required");
+      return;
+    }
+
     /*
      * HSN is optional, but when entered the backend requires 4-8 digits.
      * Strip accidental spaces/non-digits before validating/sending.
@@ -1232,9 +1273,7 @@ async function submitVendor(e) {
       ).trim(),
       category: componentForm.category,
       component_type: componentType,
-      specifications: String(
-        componentForm.specifications || ""
-      ).trim(),
+      specifications: specification,
       sku_numbers: String(
         componentForm.sku_no || ""
       ).trim(),
@@ -1364,13 +1403,14 @@ async function submitVendor(e) {
 {
   key: "code",
   header: "INW",
-  className: "text-center",
+  className: "text-center whitespace-nowrap",
       render: (r) => (
     <Link
       to={`/inward/${r.id}`}
       style={{
-        fontWeight: 700,
-        fontSize: "15px",
+        fontWeight: 600,
+        fontSize: "12px",
+        whiteSpace: "nowrap",
         color: "#E85D75",
         textDecoration: "underline",
       }}
@@ -1389,6 +1429,19 @@ async function submitVendor(e) {
   header: "Component",
   className: "text-left",
   // Displays Component Master -> component_type.
+},
+{
+  key: "specification",
+  header: "Specification",
+  className: "min-w-[180px] max-w-[320px] whitespace-normal break-words",
+  render: (r) => (
+    <span
+      className="block max-w-[320px] whitespace-normal break-words"
+      title={r.specification === "-" ? "Specification not recorded" : r.specification}
+    >
+      {r.specification || "-"}
+    </span>
+  ),
 },
 {
   key: "hsnNo",
@@ -2035,8 +2088,8 @@ async function submitVendor(e) {
                         />
                       </Field>
 
-                      <Field label="Specification">
-                        <Input name="specifications" value={componentForm.specifications} onChange={handleComponentChange} />
+                      <Field label="Specification" required>
+                        <Input name="specifications" value={componentForm.specifications} onChange={handleComponentChange} required />
                       </Field>
 
                       <Field label="HSN.No">
