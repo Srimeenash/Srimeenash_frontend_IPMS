@@ -27,7 +27,8 @@ export default function VendorNewPage() {
     state: "",
     state_code: "",
     pincode: "",
-    terms_and_conditions: "",
+    payment_terms: "",
+    shipping_terms: "",
     additional_notes: "",
     is_active: true,
   });
@@ -116,7 +117,8 @@ export default function VendorNewPage() {
   }
 
   function removeProduct(index) {
-    setProducts(products.filter((_, i) => i !== index));
+    setProducts((previous) => previous.filter((_, i) => i !== index));
+    setProductErrors((previous) => previous.filter((_, i) => i !== index));
   }
 
   const grandTotal = products.reduce((sum, item) => {
@@ -143,22 +145,37 @@ export default function VendorNewPage() {
 
       const contactFieldsValid = validateContactFields();
 
-    const errors = products.map((item) => ({
-      product: !item.product.trim(),
-    }));
+      // Vendor component details are optional. Ignore untouched blank rows,
+      // but don't discard other details entered without a component name.
+      const errors = products.map((item) => {
+        const hasProduct = Boolean(String(item.product || "").trim());
+        const hasOtherDetails =
+          Boolean(String(item.product_version || "").trim()) ||
+          Number(item.quantity ?? 1) !== 1 ||
+          Number(item.unit_price ?? 0) !== 0 ||
+          Number(item.price ?? 0) !== 0 ||
+          Number(item.gst ?? 0) !== 0;
 
-    setProductErrors(errors);
+        return { product: !hasProduct && hasOtherDetails };
+      });
 
-    const hasErrors = errors.some((error) => error.product);
+      setProductErrors(errors);
 
-    if (!contactFieldsValid || hasErrors) {
-      if (hasErrors) {
-        setError("Please enter at least one component.");
+      const hasErrors = errors.some((error) => error.product);
+      const enteredProducts = products.filter((item) =>
+        String(item.product || "").trim(),
+      );
+
+      if (!contactFieldsValid || hasErrors) {
+        if (hasErrors) {
+          setError(
+            "Enter a component name for any row with component details, or remove the unused row.",
+          );
+        }
+        submitLockRef.current = false;
+        setSaving(false);
+        return;
       }
-      submitLockRef.current = false;
-      setSaving(false);
-      return;
-    }
 
       const payload = {
         name: formData.name,
@@ -171,12 +188,13 @@ export default function VendorNewPage() {
         state: formData.state,
         state_code: formData.state_code,
         pincode: formData.pincode,
-        terms_and_conditions: formData.terms_and_conditions,
+        payment_terms: formData.payment_terms,
+        shipping_terms: formData.shipping_terms,
         additional_notes: formData.additional_notes,
         is_active: formData.is_active,
 
-        products: products.map((p) => ({
-          product: p.product,
+        products: enteredProducts.map((p) => ({
+          product: String(p.product).trim(),
           product_version: p.product_version,
           quantity: Number(p.quantity),
           price: Number(p.price),
@@ -492,18 +510,33 @@ export default function VendorNewPage() {
             />
           </div>
 
-          {/* Terms and Conditions */}
+          {/* Payment Terms */}
           <div className="space-y-1">
             <label className="mb-1 block text-xs font-semibold text-foreground">
-              Terms and Conditions
+              Payment Terms
             </label>
-            <textarea
-              name="terms_and_conditions"
-              value={formData.terms_and_conditions}
+            <input
+              type="text"
+              name="payment_terms"
+              value={formData.payment_terms}
               onChange={handleChange}
-              rows={3}
-              placeholder="Enter vendor terms and conditions"
-              className="min-h-[84px] w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm shadow-sm text-foreground transition-all focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+              placeholder="Example: 50% advance, balance in 30 days"
+              className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm shadow-sm text-foreground transition-all focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+            />
+          </div>
+
+          {/* Shipping Terms */}
+          <div className="space-y-1">
+            <label className="mb-1 block text-xs font-semibold text-foreground">
+              Shipping Terms
+            </label>
+            <input
+              type="text"
+              name="shipping_terms"
+              value={formData.shipping_terms}
+              onChange={handleChange}
+              placeholder="Example: FOB, CIF, prepaid delivery"
+              className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm shadow-sm text-foreground transition-all focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
             />
           </div>
 
@@ -544,7 +577,14 @@ export default function VendorNewPage() {
 
           <div className="md:col-span-2 xl:col-span-4 mt-4 w-full">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-base font-semibold">Component</h3>
+              <div>
+                <h3 className="text-base font-semibold">
+                  Component details <span className="text-xs font-normal text-muted-foreground">(optional)</span>
+                </h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  You can save the vendor without adding components.
+                </p>
+              </div>
 
               <button type="button" onClick={addProduct} className="rounded-md px-3 py-1.5 text-sm text-white font-medium" style={{ backgroundColor: "#E85D75" }}>
                 + Add Components

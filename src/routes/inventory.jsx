@@ -462,6 +462,186 @@ const isAllowedInDroneRequest = (request = {}) => {
   );
 };
 
+// The In Store export needs actual Excel row groups. XML Spreadsheet (.xls)
+// cannot retain those groups, so write a small standards-based .xlsx here
+// without adding a package dependency to the existing application.
+const IN_STORE_XLSX_TYPE =
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+const inStoreCrcTable = Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = value & 1 ? (value >>> 1) ^ 0xedb88320 : value >>> 1;
+  }
+  return value >>> 0;
+});
+
+const inStoreCrc32 = (bytes) => {
+  let value = 0xffffffff;
+  for (const byte of bytes) {
+    value = inStoreCrcTable[(value ^ byte) & 255] ^ (value >>> 8);
+  }
+  return (value ^ 0xffffffff) >>> 0;
+};
+
+const inStoreExcelXml = (value) =>
+  String(value ?? "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+
+const inStoreExcelColumnName = (index) => {
+  let value = index + 1;
+  let name = "";
+  while (value > 0) {
+    value -= 1;
+    name = String.fromCharCode(65 + (value % 26)) + name;
+    value = Math.floor(value / 26);
+  }
+  return name;
+};
+
+const inStoreExcelZip = (files) => {
+  const encoder = new TextEncoder();
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  let centralSize = 0;
+
+  for (const [path, content] of files) {
+    const name = encoder.encode(path);
+    const data = encoder.encode(content);
+    const checksum = inStoreCrc32(data);
+    if (data.length > 0xffffffff || offset > 0xffffffff) {
+      throw new Error("The Excel export is too large for one workbook.");
+    }
+
+    const local = new Uint8Array(30 + name.length);
+    const localView = new DataView(local.buffer);
+    localView.setUint32(0, 0x04034b50, true);
+    localView.setUint16(4, 20, true);
+    localView.setUint32(14, checksum, true);
+    localView.setUint32(18, data.length, true);
+    localView.setUint32(22, data.length, true);
+    localView.setUint16(26, name.length, true);
+    local.set(name, 30);
+    localParts.push(local, data);
+
+    const central = new Uint8Array(46 + name.length);
+    const centralView = new DataView(central.buffer);
+    centralView.setUint32(0, 0x02014b50, true);
+    centralView.setUint16(4, 20, true);
+    centralView.setUint16(6, 20, true);
+    centralView.setUint32(16, checksum, true);
+    centralView.setUint32(20, data.length, true);
+    centralView.setUint32(24, data.length, true);
+    centralView.setUint16(28, name.length, true);
+    centralView.setUint32(42, offset, true);
+    central.set(name, 46);
+    centralParts.push(central);
+    centralSize += central.length;
+    offset += local.length + data.length;
+  }
+
+  const end = new Uint8Array(22);
+  const endView = new DataView(end.buffer);
+  endView.setUint32(0, 0x06054b50, true);
+  endView.setUint16(8, files.length, true);
+  endView.setUint16(10, files.length, true);
+  endView.setUint32(12, centralSize, true);
+  endView.setUint32(16, offset, true);
+  return new Blob([...localParts, ...centralParts, end], {
+    type: IN_STORE_XLSX_TYPE,
+  });
+};
+
+const buildInStoreXlsx = (columns, groups) => {
+  const xmlRows = [];
+  let rowNumber = 1;
+
+  const addRow = (row, kind) => {
+    const cells = columns.map((column, index) => {
+      const address = `${inStoreExcelColumnName(index)}${rowNumber}`;
+      const raw = kind === "header" ? column.header : row?.[column.value];
+      const number = Number(raw);
+      const isNumber =
+        kind !== "header" &&
+        column.type === "Number" &&
+        raw !== null &&
+        raw !== undefined &&
+        raw !== "" &&
+        Number.isFinite(number);
+      const style = kind === "header" ? 1 : kind === "summary" ? 2 : 0;
+      const numberStyle = column.money && kind !== "header" ? 3 : style;
+      return isNumber
+        ? `<c r="${address}" s="${numberStyle}"><v>${number}</v></c>`
+        : `<c r="${address}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${inStoreExcelXml(raw)}</t></is></c>`;
+    });
+    const outline =
+      kind === "detail" ? ' outlineLevel="1" hidden="1"' :
+      kind === "summary" && row.detailCount > 0 ? ' collapsed="1"' : "";
+    xmlRows.push(
+      `<row r="${rowNumber}" spans="1:${columns.length}"${outline}>${cells.join("")}</row>`,
+    );
+    rowNumber += 1;
+  };
+
+  addRow({}, "header");
+  for (const group of groups) {
+    addRow({ ...group.summary, detailCount: group.details.length }, "summary");
+    for (const detail of group.details) addRow(detail, "detail");
+  }
+  if (rowNumber > 1048577) {
+    throw new Error("The export exceeds Excel's row limit.");
+  }
+
+  const lastColumn = inStoreExcelColumnName(columns.length - 1);
+  const widths = columns.map((column, index) =>
+    `<col min="${index + 1}" max="${index + 1}" width="${column.width || 18}" customWidth="1"/>`,
+  ).join("");
+  const sheet =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<sheetPr><outlinePr summaryBelow="0"/></sheetPr>' +
+    `<dimension ref="A1:${lastColumn}${rowNumber - 1}"/>` +
+    '<sheetViews><sheetView workbookViewId="0" showOutlineSymbols="1">' +
+    '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>' +
+    '</sheetView></sheetViews>' +
+    '<sheetFormatPr defaultRowHeight="17" outlineLevelRow="1"/>' +
+    `<cols>${widths}</cols><sheetData>${xmlRows.join("")}</sheetData></worksheet>`;
+
+  const styles =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<numFmts count="1"><numFmt numFmtId="164" formatCode="&quot;₹&quot;#,##0.00"/></numFmts>' +
+    '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>' +
+    '<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>' +
+    '<fills count="4"><fill><patternFill patternType="none"/></fill>' +
+    '<fill><patternFill patternType="gray125"/></fill>' +
+    '<fill><patternFill patternType="solid"><fgColor rgb="FFE6EDF5"/><bgColor indexed="64"/></patternFill></fill>' +
+    '<fill><patternFill patternType="solid"><fgColor rgb="FFF2F7FC"/><bgColor indexed="64"/></patternFill></fill></fills>' +
+    '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
+    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+    '<cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+    '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFill="1" applyFont="1"/>' +
+    '<xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFill="1" applyFont="1"/>' +
+    '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +
+    '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
+    '</styleSheet>';
+
+  return inStoreExcelZip([
+    ["[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'],
+    ["_rels/.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
+    ["xl/workbook.xml", '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="In Store" sheetId="1" r:id="rId1"/></sheets></workbook>'],
+    ["xl/_rels/workbook.xml.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'],
+    ["xl/styles.xml", styles],
+    ["xl/worksheets/sheet1.xml", sheet],
+  ]);
+};
+
 export default function InventoryPage() {
   const { openCostDetails, costDetailsPage } = useCostDetails();
 
@@ -528,6 +708,7 @@ export default function InventoryPage() {
    * while Inventory, Material Requests, Project Inventory and Outward are loading.
    */
   const [initialPageLoading, setInitialPageLoading] = useState(true);
+  const [inventoryExporting, setInventoryExporting] = useState(false);
     const [vendors, setVendors] = useState([]);
   const [components, setComponents] = useState([]);
   const [purchaseOrders, setPurchaseOrders] = useState([]);
@@ -15135,6 +15316,16 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
 
           return {
             location: "In Store",
+            receiptIds: Array.from(new Set([
+              ...(Array.isArray(item?.backendIds) ? item.backendIds : []),
+              ...(Array.isArray(item?.stockLocations)
+                ? item.stockLocations.map((stock) => stock.id)
+                : []),
+              item?.backendId,
+              item?.id,
+            ]
+              .map((id) => String(id ?? "").trim())
+              .filter((id) => /^\d+$/.test(id)))),
             componentCode:
               resolveInventoryComponentCode(
                 item,
@@ -15173,6 +15364,158 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
               "",
           };
         });
+
+  const downloadInStoreDetailedExcel = async (date) => {
+    const summaries = getInStoreExportRows();
+    const ids = Array.from(new Set(summaries.flatMap((row) => row.receiptIds)));
+
+    const missingReference = summaries.find(
+      (row) => row.quantity > 0 && !row.receiptIds.length,
+    );
+    if (missingReference) {
+      throw new Error(
+        `${missingReference.componentCode} has no saved stock receipt ID. Refresh Inventory and try again.`,
+      );
+    }
+
+    // List responses intentionally omit serial cost details. Retrieve each
+    // saved receipt so the export uses its own price and allocation per unit.
+    const receipts = new Map();
+    let nextId = 0;
+    await Promise.all(Array.from({ length: Math.min(6, ids.length) }, async () => {
+      while (nextId < ids.length) {
+        const id = ids[nextId];
+        nextId += 1;
+        const receipt = await fetchAuthenticatedJson(
+          `${config.baseURL}/inventory/inventory/${encodeURIComponent(id)}/`,
+          { cache: "no-store" },
+        );
+        receipts.set(id, receipt);
+      }
+    }));
+
+    const groups = summaries.map((summary) => {
+      const details = [];
+      const seenSerials = new Set();
+
+      for (const id of summary.receiptIds) {
+        const receipt = receipts.get(id);
+        if (!receipt) throw new Error(`Stock receipt ${id} could not be loaded.`);
+
+        const quantity = Number(receipt.quantity ?? 0);
+        if (!Number.isInteger(quantity) || quantity < 0) {
+          throw new Error(`Stock receipt ${id} has an invalid unit quantity.`);
+        }
+
+        const costRows = (Array.isArray(receipt.cost_details)
+          ? receipt.cost_details
+          : []
+        ).flatMap((group) => Array.isArray(group.serials) ? group.serials : []);
+        const costBySerial = new Map(costRows.map((cost) => [
+          String(cost.serial_number ?? "").trim(),
+          cost,
+        ]));
+        const savedSerials = Array.isArray(receipt.serial_numbers)
+          ? receipt.serial_numbers.map((serial) =>
+              String(typeof serial === "object"
+                ? serial.serial_number ?? serial.serialNumber ?? ""
+                : serial,
+              ).trim(),
+            ).filter(Boolean)
+          : [];
+        const serials = savedSerials.length
+          ? savedSerials
+          : costRows.map((cost) => String(cost.serial_number ?? "").trim()).filter(Boolean);
+
+        if (serials.length !== quantity || new Set(serials).size !== serials.length) {
+          throw new Error(
+            `Stock receipt ${receipt.inventory_code || id} has ${quantity} units but ${serials.length} unique serial records. Reconcile the receipt before exporting.`,
+          );
+        }
+
+        const receiptCode = String(receipt.inventory_code || `Inventory ${id}`).trim();
+        const receiptSource = receipt.legacy_source_key
+          ? "Imported stock"
+          : /^INW[-_]/i.test(receiptCode)
+            ? "PO / Inward"
+            : "Add Stocks";
+
+        for (const serial of serials) {
+          if (seenSerials.has(serial)) {
+            throw new Error(
+              `${summary.componentCode} has serial ${serial} in more than one stock receipt. Reconcile it before exporting.`,
+            );
+          }
+          seenSerials.add(serial);
+          const cost = costBySerial.get(serial);
+          const hasAllocatedAmount =
+            cost?.cost_available === true &&
+            cost.allocated_cost !== null &&
+            cost.allocated_cost !== undefined &&
+            cost.allocated_cost !== "" &&
+            Number.isFinite(Number(cost.allocated_cost));
+          const rawUnitPrice = cost?.unit_price ?? receipt.unit_price;
+          const unitPrice = rawUnitPrice !== null && rawUnitPrice !== undefined &&
+            rawUnitPrice !== "" && Number.isFinite(Number(rawUnitPrice))
+            ? Number(rawUnitPrice)
+            : "";
+
+          details.push({
+            ...summary,
+            quantity: 1,
+            unitCost: unitPrice,
+            totalCost: hasAllocatedAmount ? Number(cost.allocated_cost) : "",
+            usageBreakdown: receiptSource,
+            status: hasAllocatedAmount ? "Available" : "Cost not recorded",
+            serials: serial,
+            date: receipt.received_date || summary.date || "",
+            rowType: "Unit",
+            sourceReceipt: `${receiptSource} · ${receiptCode}`,
+          });
+        }
+      }
+
+      if (details.length !== summary.quantity) {
+        throw new Error(
+          `${summary.componentCode} shows ${summary.quantity} units, but its receipts contain ${details.length}. Refresh Inventory and reconcile the quantities.`,
+        );
+      }
+
+      return {
+        summary: {
+          ...summary,
+          rowType: "Component total",
+          sourceReceipt: `${summary.receiptIds.length} receipt(s) — expand this row`,
+          serials: `${details.length} individual serials — expand this row`,
+        },
+        details,
+      };
+    });
+
+    const columns = [
+      ...inventoryExportColumns
+        .filter((column) => column.value !== "component")
+        .map((column) => ({
+          ...column,
+          money: column.value === "unitCost" || column.value === "totalCost",
+          width: column.value === "specifications" ? 36 :
+            column.value === "serials" ? 33 :
+            column.value === "usageBreakdown" ? 25 : 18,
+        })),
+      { header: "Row Type", value: "rowType", width: 19 },
+      { header: "Receipt / Source", value: "sourceReceipt", width: 36 },
+    ];
+
+    const blob = buildInStoreXlsx(columns, groups);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `In_Store_Inventory_${date}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
 
   const getInDroneExportRows =
     () =>
@@ -15352,7 +15695,7 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
       });
 
   const handleInventoryExcelDownload =
-    () => {
+    async () => {
       const date =
         new Date()
           .toISOString()
@@ -15372,12 +15715,16 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
       }
 
       if (tab === "overall") {
-        downloadExcelWorkbook(
-          `In_Store_Inventory_${date}`,
-          "In Store",
-          inventoryExportColumns.filter((column) => column.value !== "component"),
-          getInStoreExportRows(),
-        );
+        if (inventoryExporting) return;
+        setInventoryExporting(true);
+        try {
+          await downloadInStoreDetailedExcel(date);
+        } catch (error) {
+          console.error("Unable to export In Store serial costs:", error);
+          alert(error?.message || "Unable to export the In Store inventory.");
+        } finally {
+          setInventoryExporting(false);
+        }
         return;
       }
 
@@ -17176,16 +17523,18 @@ const getRowsForCurrentTab = () => {
             <button
               type="button"
               onClick={handleInventoryExcelDownload}
-              disabled={initialPageLoading}
+              disabled={initialPageLoading || inventoryExporting}
               className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
               title={
                 initialPageLoading
                   ? "Please wait until Inventory loading completes"
-                  : "Download the currently selected inventory view with cost details"
+                  : inventoryExporting
+                    ? "Loading saved serial costs for the Excel workbook"
+                    : "Download the currently selected inventory view with cost details"
               }
             >
               <Download className="size-4" />
-              Download Excel
+              {inventoryExporting ? "Preparing Excel…" : "Download Excel"}
             </button>
           )}
 

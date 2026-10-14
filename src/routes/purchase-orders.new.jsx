@@ -782,6 +782,8 @@ const PurchaseOrdersPage = () => {
       return;
     }
 
+    let hasNavigatedToPurchaseOrders = false;
+
     try {
       // Validate basic fields
       if (!formData.vendor || !formData.poDate) {
@@ -876,6 +878,36 @@ const PurchaseOrdersPage = () => {
         data,
       );
 
+      const purchaseOrderId =
+        data?.id ||
+        data?.pk ||
+        data?.purchase_order_id ||
+        data?.purchaseOrderId ||
+        data?.purchase_order?.id ||
+        data?.purchaseOrder?.id;
+
+      /*
+       * The PO has been saved successfully. Return to the PO list now instead
+       * of waiting for optional vendor/history/notification follow-up requests.
+       * The list also listens for procurement:changed and reloads its data.
+       */
+      window.dispatchEvent(
+        new CustomEvent("procurement:changed", {
+          detail: {
+            type: "poCreated",
+            purchaseOrderId: purchaseOrderId ? String(purchaseOrderId) : "",
+          },
+        }),
+      );
+
+      navigate("/purchase-orders", {
+        state: {
+          refresh: Date.now(),
+          createdPurchaseOrderId: purchaseOrderId ? String(purchaseOrderId) : null,
+        },
+      });
+      hasNavigatedToPurchaseOrders = true;
+
       if (selectedVendorId) {
         try {
           const vendorDetails = await fetchAuthenticatedJson(
@@ -945,14 +977,6 @@ const PurchaseOrdersPage = () => {
         }
       }
 
-      const purchaseOrderId =
-        data?.id ||
-        data?.pk ||
-        data?.purchase_order_id ||
-        data?.purchaseOrderId ||
-        data?.purchase_order?.id ||
-        data?.purchaseOrder?.id;
-
       if (purchaseOrderId) {
         try {
           const existingNotifications =
@@ -1005,14 +1029,21 @@ const PurchaseOrdersPage = () => {
       window.dispatchEvent(
         new Event("notificationsUpdated")
       );
-
-      navigate("/purchase-orders");
     } catch (err) {
       console.error(err);
-      alert("Error creating PO: " + err.message);
+      if (!hasNavigatedToPurchaseOrders) {
+        alert("Error creating PO: " + err.message);
+      } else {
+        console.error(
+          "The PO was created; a follow-up action failed after returning to the PO list:",
+          err,
+        );
+      }
     } finally {
       submitLockRef.current = false;
-      setLoading(false);
+      if (!hasNavigatedToPurchaseOrders) {
+        setLoading(false);
+      }
     }
   };
 
@@ -1161,6 +1192,7 @@ const PurchaseOrdersPage = () => {
     children: [
       _jsx("style", { children: "\n.po-new-layout,.po-detail-layout{width:100%;max-width:100%;min-width:0;}\n.po-new-layout *,.po-detail-layout *{box-sizing:border-box;}\n.po-new-layout{padding:12px 0 24px;}\n.po-header-fields{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) minmax(0,1fr);gap:24px;}\n.po-header-fields>div{min-width:0;}\n.po-header-fields input,.po-header-fields button{width:100%;min-width:0;min-height:44px;}\n.po-items{display:table;width:100%;max-width:100%;min-width:0;table-layout:fixed;border-collapse:collapse;font-size:12px;}\n.po-items thead{display:table-header-group;background:#f8fafc;color:#475569;}\n.po-items tbody{display:table-row-group;}\n.po-items tr{display:table-row;border-bottom:1px solid #e2e8f0;}\n.po-items tbody tr:last-child{border-bottom:0;}\n.po-items th,.po-items td{display:table-cell;min-width:0;padding:14px 7px;vertical-align:top;white-space:normal;overflow-wrap:anywhere;}\n.po-items th{font-size:10px;line-height:1.5;font-weight:600;letter-spacing:.025em;text-transform:uppercase;vertical-align:middle;}\n.po-items td{line-height:1.5;}\n.po-items td::before,.po-items th::after{content:none;}\n.po-items tbody tr:hover{background:#f8fafc;}\n.po-items td input:not([type=checkbox]){width:100%;min-width:0;height:38px;padding:7px 5px;border:1px solid #dbe3ee;border-radius:6px;background:#fff;color:#0f172a;font-size:12px;}\n.po-items input:focus{outline:2px solid #f6c0cd;outline-offset:1px;}\n.po-items input[type=number]{appearance:textfield;-moz-appearance:textfield;}\n.po-items input::-webkit-inner-spin-button,.po-items input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0;}\n.po-items input[type=checkbox]{width:16px;height:16px;}\n.po-new-items th:nth-child(1){width:26%;}\n.po-new-items th:nth-child(2),.po-new-items th:nth-child(3){width:6%;}\n.po-new-items th:nth-child(4){width:10%;}\n.po-new-items th:nth-child(5),.po-new-items th:nth-child(6){width:9%;}\n.po-new-items th:nth-child(7),.po-new-items th:nth-child(8){width:10%;}\n.po-new-items th:nth-child(9){width:9%;}\n.po-new-items th:nth-child(10){width:5%;}\n.po-new-items td:nth-last-child(2){font-weight:700;color:#0f172a;padding-top:23px;}\n.po-new-items td:last-child button{font-size:11px;margin-top:9px;}\n.po-detail-items th:nth-child(1){width:3%;}\n.po-detail-items th:nth-child(2){width:23%;}\n.po-detail-items th:nth-child(3){width:10%;}\n.po-detail-items th:nth-child(4),.po-detail-items th:nth-child(5){width:5%;}\n.po-detail-items th:nth-child(6){width:9%;}\n.po-detail-items th:nth-child(7){width:8%;}\n.po-detail-items th:nth-child(8),.po-detail-items th:nth-child(9),.po-detail-items th:nth-child(10){width:9%;}\n.po-detail-items th:nth-child(11){width:10%;}\n.po-detail-items td:nth-child(2){font-weight:600;line-height:1.65;}\n.po-detail-items td:last-child{font-weight:700;}\n.po-detail-items td span{max-width:100%;white-space:normal;}\n.po-detail-layout section,.po-detail-layout section>div{min-width:0;overflow-wrap:anywhere;}\n.po-component-search{position:relative;width:100%;min-width:0;}\n.po-component-search:focus-within{z-index:60;}\n.po-component-options{position:absolute;top:44px;left:0;width:min(440px,calc(100vw - 72px));min-width:100%;z-index:100;max-height:260px;overflow-y:auto;padding:6px;background:#fff;color:#0f172a;border:1px solid #dbe3ee;border-radius:8px;box-shadow:0 10px 24px rgba(15,23,42,.16);}\n.po-component-options button{display:block;width:100%;height:auto;min-height:38px;padding:10px;text-align:left;white-space:normal;overflow-wrap:anywhere;font-size:13px;line-height:1.5;border:0;border-radius:5px;background:#fff;color:#0f172a;cursor:pointer;}\n.po-component-options button:hover,.po-component-options button[aria-selected=true]{background:#fff1f4;color:#9f1239;}\n.po-component-value{margin-top:7px;white-space:normal;overflow-wrap:anywhere;font-size:11px;line-height:1.6;color:#475569;}\n.dark .po-items thead,.dark .po-items tbody tr:hover{background:#1e293b;color:#cbd5e1;}\n.dark .po-items tr{border-color:#334155;}\n.dark .po-items td input:not([type=checkbox]),.dark .po-component-options,.dark .po-component-options button{background:#0f172a;color:#f1f5f9;border-color:#334155;}\n.dark .po-component-options button:hover,.dark .po-component-options button[aria-selected=true]{background:#334155;}\n.dark .po-component-value{color:#cbd5e1;}\n.dark .po-new-items td:nth-last-child(2){color:#f1f5f9;}\n@media(max-width:900px){.po-header-fields{grid-template-columns:repeat(2,minmax(0,1fr));}.po-header-fields>div:first-child{grid-column:1/-1;}.po-items th,.po-items td{padding:10px 4px;}.po-items,.po-items td input:not([type=checkbox]){font-size:11px;}.po-items th{font-size:9px;}}\n@media(max-width:520px){.po-header-fields{grid-template-columns:minmax(0,1fr);gap:16px;}.po-items th,.po-items td{padding:8px 2px;}.po-items td input:not([type=checkbox]){padding:5px 2px;}}\n\n.po-summary-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,340px);gap:24px;align-items:start;}.po-summary-layout>section,.po-summary-layout>div{min-width:0;}@media(max-width:767px){.po-summary-layout{grid-template-columns:minmax(0,1fr);}}\n" }),
       _jsx("style", { children: "\n.po-items-scroll{overflow-x:auto;overflow-y:visible;}\n.po-new-items th:nth-child(11),.po-new-items td:nth-child(11){min-width:96px;white-space:nowrap;}\n" }),
+      _jsx("style", { children: "\n/* Compact, responsive PO form. Desktop keeps the existing field positions. */\n.po-new-layout,.po-new-layout>.w-full,.po-new-layout .po-items-scroll{box-sizing:border-box;width:100%;max-width:100%;min-width:0;}\n.po-header-fields{grid-template-columns:minmax(0,1.6fr) minmax(0,.8fr) minmax(0,.8fr)!important;gap:16px!important;align-items:end;}\n.po-header-fields>div{min-width:0;}\n.po-header-fields input,.po-header-fields button{height:38px!important;min-height:38px!important;width:100%;min-width:0;border-radius:8px;font-size:13px;}\n.po-header-fields>div:first-child input,.po-header-fields>div:first-child button{max-width:480px;}\n.po-header-fields>div:nth-child(2) input,.po-header-fields>div:nth-child(3) input{max-width:250px;}\n.po-items-scroll{overflow:visible!important;}\n.po-new-items{display:table!important;width:100%!important;max-width:100%!important;min-width:0!important;table-layout:fixed!important;border-collapse:separate!important;border-spacing:0;}\n.po-new-items th,.po-new-items td{min-width:0!important;max-width:none!important;padding:9px 5px!important;white-space:normal!important;overflow-wrap:anywhere;vertical-align:middle;}\n.po-new-items th{font-size:9px!important;line-height:1.35!important;letter-spacing:.02em;}\n.po-new-items th:nth-child(1){width:19%!important;}\n.po-new-items th:nth-child(2){width:16%!important;}\n.po-new-items th:nth-child(3){width:5%!important;}\n.po-new-items th:nth-child(4){width:4%!important;}\n.po-new-items th:nth-child(5){width:5%!important;}\n.po-new-items th:nth-child(6){width:8%!important;}\n.po-new-items th:nth-child(7){width:6%!important;}\n.po-new-items th:nth-child(8){width:8%!important;}\n.po-new-items th:nth-child(9){width:7%!important;}\n.po-new-items th:nth-child(10){width:8%!important;}\n.po-new-items th:nth-child(11){width:9%!important;min-width:0!important;white-space:normal!important;}\n.po-new-items th:nth-child(12){width:5%!important;}\n.po-new-items td input:not([type=checkbox]){box-sizing:border-box;width:100%!important;min-width:0!important;height:34px!important;padding:5px 4px!important;font-size:11px!important;border-radius:7px;}\n.po-new-items td:nth-child(3){font-size:11px;}\n.po-new-items td:nth-child(11){padding-top:12px!important;font-size:11px;white-space:normal!important;}\n.po-new-items td:last-child button{margin-top:0!important;padding:4px 2px;font-size:10px;}\n.po-new-items tbody tr:hover{background:#f8fafc;}\n.po-new-layout .rounded-lg.border.border-border.bg-card.p-6.shadow-sm{padding:18px!important;}\n.po-new-layout .po-items-scroll+div{min-width:0;}\n.po-new-layout button:focus-visible,.po-new-layout input:focus-visible{outline:2px solid #e96a83;outline-offset:2px;}\n.dark .po-new-items tbody tr:hover{background:#1e293b;}\n@media(max-width:1250px){\n  .po-new-items,.po-new-items thead,.po-new-items tbody,.po-new-items tr,.po-new-items th,.po-new-items td{display:block!important;width:100%!important;}\n  .po-new-items thead{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important;}\n  .po-new-items tbody{display:grid!important;gap:12px;padding:12px;}\n  .po-new-items tbody tr{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;padding:12px;border:1px solid #e2e8f0;border-radius:10px;background:#fff;}\n  .po-new-items tbody td{display:grid!important;grid-template-columns:minmax(86px,34%) minmax(0,1fr);align-items:center;gap:8px;padding:3px 0!important;}\n  .po-new-items tbody td::before{content:attr(data-label)!important;display:block;font-size:10px;font-weight:600;line-height:1.3;color:#64748b;text-transform:uppercase;}\n  .po-new-items tbody td:nth-child(1),.po-new-items tbody td:nth-child(2){grid-column:1/-1;}\n  .po-new-items td input:not([type=checkbox]){font-size:12px!important;}\n  .po-new-items td:nth-child(11){padding-top:3px!important;}\n  .po-new-items td:last-child button{text-align:left;font-size:12px;}\n  .dark .po-new-items tbody tr{background:#0f172a;border-color:#334155;}\n}\n@media(max-width:560px){\n  .po-new-items tbody tr{grid-template-columns:minmax(0,1fr);}\n  .po-new-items tbody td{grid-template-columns:minmax(105px,38%) minmax(0,1fr);}\n  .po-header-fields>div:first-child input,.po-header-fields>div:first-child button,.po-header-fields>div:nth-child(2) input,.po-header-fields>div:nth-child(3) input{max-width:100%;}\n}\n" }),
       _jsx(PageHeader, {
         title: "Create Purchase Order",
         subtitle: "Raise a PO against components or vendors",

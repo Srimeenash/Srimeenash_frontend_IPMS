@@ -378,6 +378,17 @@ const role = useMemo(
   const [selectedPoRequest, setSelectedPoRequest] = useState(null);
   const [showCreatePoModal, setShowCreatePoModal] = useState(false);
   const [poSubmitting, setPoSubmitting] = useState(false);
+  const [showRestoreApprovalModal, setShowRestoreApprovalModal] = useState(false);
+  const [activeRestoreNotification, setActiveRestoreNotification] = useState(null);
+  const [restoreSubmitting, setRestoreSubmitting] = useState(false);
+  const [restoreHistoryLoading, setRestoreHistoryLoading] = useState(false);
+  const [restoreForm, setRestoreForm] = useState({
+    vendorId: "",
+    requestedDate: "",
+    expectedDeliveryDate: "",
+    roundOff: "0",
+    items: [],
+  });
 
   /*
    * When 2 or more selected MR components use the same vendor,
@@ -1490,7 +1501,7 @@ const hydrateQcFailedNotification = async (
         ).trim() ||
         "-",
       poNumber:
-        "Auto from source PO",
+        "New Restore PO",
       status:
         String(
           notification?.status ||
@@ -1540,9 +1551,295 @@ const getQcFailedActionErrorMessage = (
   );
 };
 
+const getLocalDateInputValue = () => {
+  const date = new Date();
+  const offset = date.getTimezoneOffset();
+  return new Date(date.getTime() - offset * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+};
+
+const restoreNumber = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+};
+
+const formatRestoreCurrency = (value) =>
+  new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(restoreNumber(value));
+
+const getRestoreLineAmounts = (item) => {
+  const quantity = Math.max(0, restoreNumber(item?.quantity));
+  const basicAmount = quantity * Math.max(0, restoreNumber(item?.unitPrice));
+  const discount = Math.min(
+    basicAmount,
+    Math.max(0, restoreNumber(item?.discount)),
+  );
+  const taxableAmount = Math.max(0, basicAmount - discount);
+  const gstAmount = taxableAmount * Math.max(0, restoreNumber(item?.gstPercentage)) / 100;
+  const freightCost = Math.max(0, restoreNumber(item?.freightCost));
+  const freightGstAmount =
+    freightCost * Math.max(0, restoreNumber(item?.freightGstPercentage)) / 100;
+  return {
+    basicAmount,
+    discount,
+    gstAmount,
+    freightCost,
+    freightGstAmount,
+    lineTotal: taxableAmount + gstAmount + freightCost + freightGstAmount,
+  };
+};
+
+const getRestoreOrderSummary = (items, roundOff) => {
+  const lines = (Array.isArray(items) ? items : []).map(getRestoreLineAmounts);
+  const basicAmount = lines.reduce((total, line) => total + line.basicAmount, 0);
+  const discount = lines.reduce((total, line) => total + line.discount, 0);
+  const gst = lines.reduce((total, line) => total + line.gstAmount, 0);
+  const freightCost = lines.reduce((total, line) => total + line.freightCost, 0);
+  const freightGst = lines.reduce((total, line) => total + line.freightGstAmount, 0);
+  const subtotal = basicAmount - discount + gst + freightCost + freightGst;
+  const roundOffAmount = restoreNumber(roundOff);
+  return {
+    basicAmount,
+    discount,
+    gst,
+    freightCost,
+    freightGst,
+    subtotal,
+    roundOff: roundOffAmount,
+    grandTotal: subtotal + roundOffAmount,
+  };
+};
+
+const loadRestorePurchaseHistory = async (items) => {
+  if (!Array.isArray(items) || !items.length) return;
+  setRestoreHistoryLoading(true);
+  try {
+    const purchaseOrders = await fetchAllPurchaseOrders();
+    const historyByComponent = new Map();
+
+    items.forEach((line) => {
+      const keys = new Set(getComponentKeys(line.componentId, line.componentCode));
+      const history = [];
+      purchaseOrders.forEach((order) => {
+        const vendor = String(order?.vendor_name || order?.vendor?.name || order?.vendor || "").trim();
+        const date = order?.po_date || order?.date || order?.created_at || "";
+        (Array.isArray(order?.items) ? order.items : []).forEach((poItem) => {
+          if (!getPoItemComponentKeys(poItem).some((key) => keys.has(key))) return;
+          const price = Number(poItem?.unit_price ?? poItem?.unitPrice ?? poItem?.price ?? 0);
+          if (Number.isFinite(price) && price > 0) history.push({ vendor, price, date });
+        });
+      });
+
+      history.sort((left, right) => new Date(right.date || 0) - new Date(left.date || 0));
+      const lowest = history.reduce(
+        (best, current) => (!best || current.price < best.price ? current : best),
+        null,
+      );
+      const highest = history.reduce(
+        (best, current) => (!best || current.price > best.price ? current : best),
+        null,
+      );
+      historyByComponent.set(line.componentId, {
+        history,
+        latest: history[0] || null,
+        lowest,
+        highest,
+      });
+    });
+
+    setRestoreForm((previous) => ({
+      ...previous,
+      items: previous.items.map((line) => ({
+        ...line,
+        purchaseHistory: historyByComponent.get(line.componentId) || {
+          history: [], latest: null, lowest: null, highest: null,
+        },
+      })),
+    }));
+  } catch (error) {
+    console.error("Failed to load prior purchase prices for Restore components", error);
+  } finally {
+    setRestoreHistoryLoading(false);
+  }
+};
+
+const openReturnableRestoreApproval = (row) => {
+  const metadata =
+    row?.sourcePayload?.inventory_allocations &&
+    typeof row.sourcePayload.inventory_allocations === "object" &&
+    !Array.isArray(row.sourcePayload.inventory_allocations)
+      ? row.sourcePayload.inventory_allocations
+      : {};
+  const failedItems = Array.isArray(metadata.scrap_items)
+    ? metadata.scrap_items
+    : Array.isArray(metadata.failed_items)
+      ? metadata.failed_items
+      : [];
+
+  const items = failedItems
+    .map((item) => {
+      const componentPk = item?.component ?? item?.component_id;
+      const quantity = Number(
+        item?.quantity || item?.serial_numbers?.length || 0,
+      );
+      if (!componentPk || quantity <= 0) return null;
+      const componentKeys = new Set(getComponentKeys(componentPk, item?.component_code));
+      const masterComponent = poComponents.find((component) =>
+        getComponentKeys(component).some((key) => componentKeys.has(key)),
+      );
+      return {
+        componentId: String(componentPk),
+        componentCode: String(item?.component_code || "").trim(),
+        componentName: String(
+          item?.component_name || item?.label || item?.component_code || "Component",
+        ).trim(),
+        quantity,
+        uom: String(item?.uom || masterComponent?.uom || masterComponent?.unit_of_measurements || masterComponent?.unit || masterComponent?.unit_of_measure || "").trim(),
+        unitPrice: "",
+        discount: "0",
+        gstPercentage: "",
+        freightCost: "0",
+        freightGstPercentage: "0",
+        purchaseHistory: { history: [], latest: null, lowest: null, highest: null },
+      };
+    })
+    .filter(Boolean);
+
+  if (!items.length) {
+    alert("Failed component details could not be loaded. Refresh the page and try again.");
+    return;
+  }
+
+  setActiveRestoreNotification(row);
+  setRestoreForm({
+    vendorId: "",
+    requestedDate: getLocalDateInputValue(),
+    expectedDeliveryDate: "",
+    roundOff: "0",
+    items,
+  });
+  setRestoreHistoryLoading(true);
+  setShowRestoreApprovalModal(true);
+  void loadRestorePurchaseHistory(items);
+};
+
+const updateRestoreLine = (index, field, value) => {
+  setRestoreForm((previous) => ({
+    ...previous,
+    items: previous.items.map((item, itemIndex) =>
+      itemIndex === index ? { ...item, [field]: value } : item,
+    ),
+  }));
+};
+
+const submitReturnableRestoreApproval = async (event) => {
+  event.preventDefault();
+  if (!activeRestoreNotification || restoreSubmitting) return;
+
+  const vendor = vendors.find(
+    (item) => String(item?.id ?? "") === String(restoreForm.vendorId),
+  );
+  if (!vendor) {
+    alert("Select a vendor before sending this Restore request to Finance.");
+    return;
+  }
+
+  const expectedDeliveryDate = String(restoreForm.expectedDeliveryDate || "").trim();
+  if (!restoreForm.requestedDate || !expectedDeliveryDate) {
+    alert("Enter both the requested date and expected delivery date.");
+    return;
+  }
+
+  const items = restoreForm.items.map((item) => ({
+    component_id: item.componentId,
+    component_code: item.componentCode,
+    quantity: item.quantity,
+    unit_price: item.unitPrice,
+    discount: item.discount || "0",
+    gst_percentage: item.gstPercentage,
+    freight_cost: item.freightCost || "0",
+    freight_gst_percentage: item.freightGstPercentage || "0",
+    uom: item.uom || "",
+  }));
+  if (
+    items.some(
+      (item) =>
+        item.unit_price === "" ||
+        !Number.isFinite(Number(item.unit_price)) ||
+        Number(item.unit_price) <= 0 ||
+        item.gst_percentage === "" ||
+        !Number.isFinite(Number(item.gst_percentage)) ||
+        Number(item.gst_percentage) < 0 ||
+        Number(item.gst_percentage) > 100 ||
+        !Number.isFinite(Number(item.discount)) ||
+        Number(item.discount) < 0 ||
+        Number(item.discount) > Number(item.quantity) * Number(item.unit_price) ||
+        !Number.isFinite(Number(item.freight_cost)) ||
+        Number(item.freight_cost) < 0 ||
+        !Number.isFinite(Number(item.freight_gst_percentage)) ||
+        Number(item.freight_gst_percentage) < 0 ||
+        Number(item.freight_gst_percentage) > 100,
+    )
+  ) {
+    alert("Check each line: enter a unit price, valid GST percentages, and non-negative discount and freight values. Discount cannot exceed the line amount.");
+    return;
+  }
+
+  if (!Number.isFinite(Number(restoreForm.roundOff || 0))) {
+    alert("Enter a valid round-off amount.");
+    return;
+  }
+
+  const addressParts = [
+    vendor?.address,
+    vendor?.city,
+    vendor?.state,
+    vendor?.pincode,
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+
+  const payload = {
+    vendor_id: vendor?.id,
+    vendor_name: vendor?.name || vendor?.vendor_name,
+    gstin: vendor?.gst_number || vendor?.gstin || "",
+    location: addressParts.join(", "),
+    requested_date: restoreForm.requestedDate,
+    expected_delivery_date: expectedDeliveryDate,
+    round_off: restoreForm.roundOff || "0",
+    items,
+  };
+
+  setRestoreSubmitting(true);
+  try {
+    const succeeded = await approveQcFailedNotification(
+      activeRestoreNotification,
+      payload,
+    );
+    if (succeeded) {
+      setShowRestoreApprovalModal(false);
+      setActiveRestoreNotification(null);
+    }
+  } finally {
+    setRestoreSubmitting(false);
+  }
+};
+
 const approveQcFailedNotification = async (
   row,
+  restorePayload = null,
 ) => {
+  if (
+    row?.sourceType === "RETURNABLE_RESTORE" &&
+    !restorePayload
+  ) {
+    openReturnableRestoreApproval(row);
+    return false;
+  }
+
   const key = String(
     row?.id ||
       row?.sourceId ||
@@ -1550,7 +1847,7 @@ const approveQcFailedNotification = async (
   ).trim();
 
   if (!beginQcAction(key)) {
-    return;
+    return false;
   }
 
   try {
@@ -1617,7 +1914,7 @@ const approveQcFailedNotification = async (
                 "application/json",
             },
             body:
-              JSON.stringify({}),
+              JSON.stringify(restorePayload || {}),
           },
         );
     } else {
@@ -1760,6 +2057,7 @@ const approveQcFailedNotification = async (
         );
       });
     }, 0);
+    return true;
   } catch (error) {
     console.error(
       "QC Failed Procurement approval failed:",
@@ -1775,6 +2073,7 @@ const approveQcFailedNotification = async (
           : "Unable to approve QC Failed request.",
       ),
     );
+    return false;
   } finally {
     /*
      * Release immediately after the authoritative POST / local update.
@@ -6477,6 +6776,475 @@ Totals items:
           </div>BOM, MR and Scrap notifications for admin and manager users
 
 
+        </div>
+      )}
+      {showRestoreApprovalModal && activeRestoreNotification && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-slate-950/65 p-2 backdrop-blur-[2px] sm:p-5">
+          <form
+            onSubmit={(event) => void submitReturnableRestoreApproval(event)}
+            className="flex max-h-[96vh] w-full max-w-7xl flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white text-slate-900 shadow-[0_24px_80px_rgba(15,23,42,0.35)] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+          >
+            <div className="flex shrink-0 items-start justify-between gap-5 border-b border-slate-200 bg-gradient-to-r from-white via-white to-rose-50/70 px-5 py-5 dark:border-slate-800 dark:from-slate-950 dark:via-slate-950 dark:to-rose-950/20 sm:px-7">
+              <div className="min-w-0">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <span className="inline-flex items-center rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300">
+                    QC failed restore
+                  </span>
+                  <span className="truncate rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                    {activeRestoreNotification.material_request_id ||
+                      activeRestoreNotification.request_id ||
+                      activeRestoreNotification.mr_id ||
+                      "Material Request"}
+                  </span>
+                </div>
+                <h2 className="text-xl font-bold tracking-tight sm:text-2xl">
+                  Prepare restore purchase
+                </h2>
+                <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-400">
+                  Enter the supplier, delivery dates, and pricing for the failed quantity. Finance must approve this request before Procurement can mark the purchase order as ordered.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowRestoreApprovalModal(false);
+                  setActiveRestoreNotification(null);
+                }}
+                disabled={restoreSubmitting}
+                aria-label="Close restore purchase form"
+                className="inline-flex size-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-xl leading-none text-slate-500 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
+              >
+                <span aria-hidden="true">×</span>
+              </button>
+            </div>
+
+            <div className="min-h-0 space-y-6 overflow-y-auto px-4 py-5 sm:px-6 lg:px-7">
+              <section className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-900/60 sm:p-5">
+                <div className="mb-4 flex items-center gap-3">
+                  <span className="inline-flex size-8 items-center justify-center rounded-xl bg-indigo-100 text-xs font-bold text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300">
+                    01
+                  </span>
+                  <div>
+                    <h3 className="text-sm font-semibold">Supplier and delivery</h3>
+                    <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                      Choose the vendor and confirm the order dates.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-3">
+                  <label className="block space-y-1.5">
+                    <span className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">
+                      Vendor <span className="text-rose-600">Required</span>
+                    </span>
+                    <select
+                      required
+                      value={restoreForm.vendorId}
+                      onChange={(event) =>
+                        setRestoreForm((previous) => ({
+                          ...previous,
+                          vendorId: event.target.value,
+                        }))
+                      }
+                      className="h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm font-normal outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-950 dark:focus:ring-indigo-950/60"
+                    >
+                      <option value="">Select vendor</option>
+                      {vendors.map((vendor) => {
+                        const vendorId = vendor?.id;
+                        const vendorName = vendor?.name || vendor?.vendor_name || "";
+                        if (!vendorId || !vendorName) return null;
+                        return (
+                          <option key={String(vendorId)} value={String(vendorId)}>
+                            {vendorName}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </label>
+
+                  <label className="block space-y-1.5">
+                    <span className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">
+                      Requested date <span className="text-rose-600">Required</span>
+                    </span>
+                    <input
+                      required
+                      type="date"
+                      value={restoreForm.requestedDate}
+                      onChange={(event) =>
+                        setRestoreForm((previous) => ({
+                          ...previous,
+                          requestedDate: event.target.value,
+                        }))
+                      }
+                      className="h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm font-normal outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-950 dark:focus:ring-indigo-950/60"
+                    />
+                  </label>
+
+                  <label className="block space-y-1.5">
+                    <span className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">
+                      Expected delivery <span className="text-rose-600">Required</span>
+                    </span>
+                    <input
+                      required
+                      type="date"
+                      min={restoreForm.requestedDate || undefined}
+                      value={restoreForm.expectedDeliveryDate}
+                      onChange={(event) =>
+                        setRestoreForm((previous) => ({
+                          ...previous,
+                          expectedDeliveryDate: event.target.value,
+                        }))
+                      }
+                      className="h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm font-normal outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-950 dark:focus:ring-indigo-950/60"
+                    />
+                  </label>
+                </div>
+              </section>
+
+              <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_21rem]">
+                <section className="min-w-0 space-y-4">
+                  <div className="flex flex-wrap items-end justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <span className="inline-flex size-8 items-center justify-center rounded-xl bg-amber-100 text-xs font-bold text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+                        02
+                      </span>
+                      <div>
+                        <h3 className="text-sm font-semibold">Failed components</h3>
+                        <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                          Quantities are fixed from QC. Add pricing for each line.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
+                      {restoreForm.items.length} component(s)
+                      <span className="mx-2 text-amber-400">·</span>
+                      {restoreForm.items.reduce(
+                        (total, item) => total + restoreNumber(item.quantity),
+                        0,
+                      )}{" "}
+                      failed unit(s)
+                    </div>
+                  </div>
+
+                  {restoreForm.items.map((item, index) => {
+                    const amounts = getRestoreLineAmounts(item);
+                    const history = item.purchaseHistory || {};
+                    const historyRows = [
+                      ["Most recent", history.latest],
+                      ["Lowest", history.lowest],
+                      ["Highest", history.highest],
+                    ].filter(([, purchase]) => purchase);
+
+                    return (
+                      <article
+                        key={String(item.componentId) + ":" + index}
+                        className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 bg-slate-50/80 px-4 py-4 dark:border-slate-800 dark:bg-slate-900/70 sm:px-5">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <span className="inline-flex size-9 shrink-0 items-center justify-center rounded-xl bg-indigo-100 text-xs font-bold text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300">
+                              {String(index + 1).padStart(2, "0")}
+                            </span>
+                            <div className="min-w-0">
+                              <p className="truncate font-mono text-sm font-bold text-slate-900 dark:text-white">
+                                {item.componentCode || item.componentName || "Component"}
+                              </p>
+                              {item.componentName &&
+                                item.componentName !== item.componentCode && (
+                                  <p className="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">
+                                    {item.componentName}
+                                  </p>
+                                )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-right dark:border-slate-700 dark:bg-slate-950">
+                              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                Failed quantity
+                              </p>
+                              <p className="mt-0.5 text-sm font-bold tabular-nums">
+                                {item.quantity}
+                                <span className="ml-1.5 text-xs font-medium text-slate-500 dark:text-slate-400">
+                                  {item.uom || "units"}
+                                </span>
+                              </p>
+                            </div>
+                            <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-right dark:border-rose-900 dark:bg-rose-950/30">
+                              <p className="text-[10px] font-semibold uppercase tracking-wide text-rose-600 dark:text-rose-300">
+                                Line total
+                              </p>
+                              <p className="mt-0.5 whitespace-nowrap text-sm font-bold tabular-nums text-rose-800 dark:text-rose-200">
+                                {formatRestoreCurrency(amounts.lineTotal)}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3 sm:p-5">
+                          <label className="block space-y-1.5">
+                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                              Unit price (₹) <span className="text-rose-600">*</span>
+                            </span>
+                            <input
+                              required
+                              type="number"
+                              min="0.01"
+                              step="0.01"
+                              value={item.unitPrice}
+                              onChange={(event) =>
+                                updateRestoreLine(index, "unitPrice", event.target.value)
+                              }
+                              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-950 dark:focus:ring-indigo-950/60"
+                            />
+                          </label>
+
+                          <label className="block space-y-1.5">
+                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                              Discount (₹)
+                            </span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={item.discount}
+                              onChange={(event) =>
+                                updateRestoreLine(index, "discount", event.target.value)
+                              }
+                              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-950 dark:focus:ring-indigo-950/60"
+                            />
+                          </label>
+
+                          <label className="block space-y-1.5">
+                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                              GST (%) <span className="text-rose-600">*</span>
+                            </span>
+                            <input
+                              required
+                              type="number"
+                              min="0"
+                              max="100"
+                              step="0.01"
+                              value={item.gstPercentage}
+                              onChange={(event) =>
+                                updateRestoreLine(index, "gstPercentage", event.target.value)
+                              }
+                              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-950 dark:focus:ring-indigo-950/60"
+                            />
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                              GST amount: {formatRestoreCurrency(amounts.gstAmount)}
+                            </p>
+                          </label>
+
+                          <label className="block space-y-1.5">
+                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                              Freight cost (₹)
+                            </span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={item.freightCost}
+                              onChange={(event) =>
+                                updateRestoreLine(index, "freightCost", event.target.value)
+                              }
+                              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-950 dark:focus:ring-indigo-950/60"
+                            />
+                          </label>
+
+                          <label className="block space-y-1.5">
+                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                              Freight GST (%)
+                            </span>
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              step="0.01"
+                              value={item.freightGstPercentage}
+                              onChange={(event) =>
+                                updateRestoreLine(index, "freightGstPercentage", event.target.value)
+                              }
+                              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-950 dark:focus:ring-indigo-950/60"
+                            />
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                              Freight GST amount: {formatRestoreCurrency(amounts.freightGstAmount)}
+                            </p>
+                          </label>
+                        </div>
+
+                        <div className="border-t border-slate-200 bg-slate-50/60 px-4 py-4 dark:border-slate-800 dark:bg-slate-900/40 sm:px-5">
+                          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-700 dark:text-slate-300">
+                                Previous purchase prices
+                              </h4>
+                              <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                                Use this history to compare the supplier and pricing.
+                              </p>
+                            </div>
+                            {restoreHistoryLoading && (
+                              <span className="inline-flex items-center gap-2 text-xs text-indigo-600 dark:text-indigo-300">
+                                <Loader2 className="size-3.5 animate-spin" />
+                                Loading history
+                              </span>
+                            )}
+                          </div>
+
+                          {historyRows.length ? (
+                            <div className="grid gap-2 sm:grid-cols-3">
+                              {historyRows.map(([label, purchase]) => (
+                                <div
+                                  key={String(item.componentId) + ":" + label}
+                                  className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 dark:border-slate-700 dark:bg-slate-950"
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                      {label}
+                                    </span>
+                                    <span className="whitespace-nowrap text-xs font-bold text-slate-900 dark:text-white">
+                                      {formatRestoreCurrency(purchase.price)}
+                                    </span>
+                                  </div>
+                                  <p className="mt-1 truncate text-xs text-slate-600 dark:text-slate-300">
+                                    {purchase.vendor || "Vendor unavailable"}
+                                  </p>
+                                  {purchase.date && (
+                                    <p className="mt-0.5 text-[10px] text-slate-500 dark:text-slate-400">
+                                      {String(purchase.date).slice(0, 10)}
+                                    </p>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="rounded-xl border border-dashed border-slate-300 bg-white px-3 py-3 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-400">
+                              {restoreHistoryLoading
+                                ? "Searching previous purchase orders…"
+                                : "No previous purchase price was found for this component."}
+                            </p>
+                          )}
+                        </div>
+                      </article>
+                    );
+                  })}
+                </section>
+
+                {(() => {
+                  const summary = getRestoreOrderSummary(
+                    restoreForm.items,
+                    restoreForm.roundOff,
+                  );
+
+                  return (
+                    <section className="h-fit overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-950 xl:sticky xl:top-0">
+                      <div className="border-b border-slate-200 bg-slate-50 px-5 py-4 dark:border-slate-800 dark:bg-slate-900">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <h3 className="text-sm font-semibold">Order summary</h3>
+                            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                              Totals update as you edit pricing.
+                            </p>
+                          </div>
+                          <span className="rounded-lg bg-indigo-100 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300">
+                            Live
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="space-y-3 p-5">
+                        <div className="flex justify-between gap-4 text-sm">
+                          <span className="text-slate-600 dark:text-slate-400">Basic amount</span>
+                          <span className="font-medium tabular-nums">{formatRestoreCurrency(summary.basicAmount)}</span>
+                        </div>
+                        <div className="flex justify-between gap-4 text-sm">
+                          <span className="text-slate-600 dark:text-slate-400">Discount</span>
+                          <span className="font-medium tabular-nums">− {formatRestoreCurrency(summary.discount)}</span>
+                        </div>
+                        <div className="flex justify-between gap-4 text-sm">
+                          <span className="text-slate-600 dark:text-slate-400">GST</span>
+                          <span className="font-medium tabular-nums">{formatRestoreCurrency(summary.gst)}</span>
+                        </div>
+                        <div className="flex justify-between gap-4 text-sm">
+                          <span className="text-slate-600 dark:text-slate-400">Freight cost</span>
+                          <span className="font-medium tabular-nums">{formatRestoreCurrency(summary.freightCost)}</span>
+                        </div>
+                        <div className="flex justify-between gap-4 text-sm">
+                          <span className="text-slate-600 dark:text-slate-400">Freight GST</span>
+                          <span className="font-medium tabular-nums">{formatRestoreCurrency(summary.freightGst)}</span>
+                        </div>
+
+                        <div className="flex justify-between gap-4 border-t border-slate-200 pt-3 text-sm font-semibold dark:border-slate-800">
+                          <span>Subtotal</span>
+                          <span className="tabular-nums">{formatRestoreCurrency(summary.subtotal)}</span>
+                        </div>
+
+                        <label className="block space-y-1.5 rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
+                          <span className="flex items-center justify-between gap-3 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                            Round-off (+ / −)
+                            <span className="font-normal text-slate-500 dark:text-slate-400">Optional</span>
+                          </span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={restoreForm.roundOff}
+                            onChange={(event) =>
+                              setRestoreForm((previous) => ({
+                                ...previous,
+                                roundOff: event.target.value,
+                              }))
+                            }
+                            className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-right text-sm outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-950 dark:focus:ring-indigo-950/60"
+                          />
+                        </label>
+
+                        <div className="rounded-xl bg-indigo-600 px-4 py-4 text-white shadow-sm dark:bg-indigo-500">
+                          <div className="flex items-center justify-between gap-3 text-sm font-semibold">
+                            <span>Grand total</span>
+                            <span className="text-lg tabular-nums">
+                              {formatRestoreCurrency(summary.grandTotal)}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-[11px] text-indigo-100">
+                            Includes tax, freight, and round-off.
+                          </p>
+                        </div>
+                      </div>
+                    </section>
+                  );
+                })()}
+              </div>
+            </div>
+
+            <div className="flex shrink-0 flex-col gap-3 border-t border-slate-200 bg-white px-4 py-4 dark:border-slate-800 dark:bg-slate-950 sm:flex-row sm:items-center sm:justify-between sm:px-7">
+              <p className="text-xs leading-5 text-slate-500 dark:text-slate-400">
+                Submitting sends this restore request to Finance for approval.
+              </p>
+              <div className="flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowRestoreApprovalModal(false);
+                    setActiveRestoreNotification(null);
+                  }}
+                  disabled={restoreSubmitting}
+                  className="rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={restoreSubmitting || !vendors.length}
+                  className="inline-flex min-w-52 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400"
+                >
+                  {restoreSubmitting && <Loader2 className="size-4 animate-spin" />}
+                  {restoreSubmitting
+                    ? "Sending to Finance…"
+                    : "Submit for Finance Approval"}
+                </button>
+              </div>
+            </div>
+          </form>
         </div>
       )}
     </PageShell>

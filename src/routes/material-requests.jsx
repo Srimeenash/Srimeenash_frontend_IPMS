@@ -99,7 +99,7 @@ const MR_STATUS_PRESENTATION = {
       "border-violet-600 bg-violet-600 text-white dark:border-violet-500 dark:bg-violet-500",
   },
   INVENTORY_PENDING: {
-    statusLabel: "Inventory Check",
+    statusLabel: "Inventory Pending",
     statusClass:
       "border-cyan-200 bg-cyan-50 text-cyan-800 dark:border-cyan-800 dark:bg-cyan-950/50 dark:text-cyan-300",
     actionLabel: "Sent to Inventory",
@@ -749,8 +749,10 @@ function MaterialRequestsPage() {
     useState(false);
   const [materialRequestsHasPreviousPage, setMaterialRequestsHasPreviousPage] =
     useState(false);
+  // Sort by database ID so newly created requests (including PR reorder MRs)
+  // stay at the top even when their request date is older or matches other rows.
   const [materialRequestsOrdering, setMaterialRequestsOrdering] =
-    useState("-date");
+    useState("-id");
   const [materialRequestsColumnFilters, setMaterialRequestsColumnFilters] =
     useState({});
   const [debouncedMaterialRequestsColumnFilters, setDebouncedMaterialRequestsColumnFilters] =
@@ -5804,7 +5806,49 @@ function MaterialRequestsPage() {
     setSelectionMode(false);
   };
 
+  const handledMaterialRequestRefreshRef = useRef(null);
+
   useEffect(() => {
+    const refreshToken = location.state?.refresh;
+    const hasRefreshToken =
+      refreshToken !== undefined && refreshToken !== null;
+
+    if (
+      hasRefreshToken &&
+      handledMaterialRequestRefreshRef.current !== String(refreshToken)
+    ) {
+      handledMaterialRequestRefreshRef.current = String(refreshToken);
+
+      const hasActiveFilters = [
+        materialRequestsColumnFilters,
+        debouncedMaterialRequestsColumnFilters,
+      ].some((filters) =>
+        Object.values(filters || {}).some((value) =>
+          String(value ?? "").trim(),
+        ),
+      );
+
+      const shouldResetList =
+        materialRequestsPage !== 1 ||
+        materialRequestsOrdering !== "-id" ||
+        hasActiveFilters ||
+        selectionMode ||
+        selectedRowKeys.length > 0;
+
+      // Return to page 1, clear table filters, and show the newest MR first
+      // after a successful create. The next effect pass loads that first page.
+      setMaterialRequestsPage(1);
+      setMaterialRequestsOrdering("-id");
+      setMaterialRequestsColumnFilters({});
+      setDebouncedMaterialRequestsColumnFilters({});
+      setSelectedRowKeys([]);
+      setSelectionMode(false);
+
+      if (shouldResetList) {
+        return;
+      }
+    }
+
     void loadRequests();
   }, [
     location.state,
@@ -5823,7 +5867,6 @@ function MaterialRequestsPage() {
         paginate: "1",
         page: String(materialRequestsPage),
         page_size: String(MATERIAL_REQUESTS_PAGE_SIZE),
-        hide_drone_returnable_source: "1",
       });
 
       if (materialRequestsOrdering) {
@@ -6330,8 +6373,9 @@ const displayReadyRequests =
 
 
       /*
-       * DRONE Returnable source visibility is already handled by Django
-       * before Material Request pagination.
+       * Keep each source MR and every Returnable QC reorder MR as its own
+       * history row. Only records explicitly removed from this page are
+       * omitted by the backend.
        */
       const visibleRequests = normalized.filter(
         (request) => !deletedMrIdsRef.current.has(String(request.id)),

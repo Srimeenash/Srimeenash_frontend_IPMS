@@ -131,6 +131,126 @@ function getQcFailedRows(entry) {
   );
 }
 
+function getFailedQcQuantity(row = {}) {
+  const toPositiveNumber = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 ? number : 0;
+  };
+  const metadata =
+    row?.inventory_allocations &&
+    typeof row.inventory_allocations === 'object' &&
+    !Array.isArray(row.inventory_allocations)
+      ? row.inventory_allocations
+      : {};
+  const workflow = String(metadata.workflow || '').trim().toUpperCase();
+  const isReturnableQcFailure = [
+    'RETURNABLE_COMPONENT_QC_V1',
+    'RETURNABLE_DRONE_QC_V1',
+  ].includes(workflow);
+
+  if (isReturnableQcFailure) {
+    // The backend records the exact NOT OK count here; do not use a broad
+    // nested-field scan, which can include unrelated MR quantities.
+    const exactMetadataQty = toPositiveNumber(
+      metadata.scrap_quantity ??
+        metadata.failed_quantity ??
+        metadata.failed_qty,
+    );
+    if (exactMetadataQty > 0) return exactMetadataQty;
+
+    const failedGroups =
+      metadata.failed_items ||
+      metadata.failedItems ||
+      metadata.scrap_items ||
+      metadata.scrapItems ||
+      [];
+    if (Array.isArray(failedGroups) && failedGroups.length) {
+      const groupQty = failedGroups.reduce((total, item) => {
+        const itemQty = toPositiveNumber(
+          item?.quantity ??
+            item?.failed_quantity ??
+            item?.failed_qty ??
+            item?.qty,
+        );
+        const serialQty = Array.isArray(item?.serial_numbers)
+          ? new Set(item.serial_numbers.map((value) => String(value || '').trim()).filter(Boolean)).size
+          : 0;
+        const failedQcQty = Array.isArray(item?.qc_items)
+          ? item.qc_items.filter((qcItem) =>
+              ['NOTOK', 'NOK', 'FAIL', 'FAILED'].includes(
+                String(qcItem?.condition || qcItem?.result || '')
+                  .replace(/[^a-z0-9]/gi, '')
+                  .toUpperCase(),
+              ),
+            ).length
+          : 0;
+        return total + (itemQty || serialQty || failedQcQty);
+      }, 0);
+      if (groupQty > 0) return groupQty;
+    }
+
+    // This row's serial list is created from NOT OK results only.
+    const failedSerials =
+      metadata.failed_serial_numbers ||
+      metadata.failedSerialNumbers ||
+      row?.serial_numbers ||
+      row?.serialNumbers;
+    if (Array.isArray(failedSerials) && failedSerials.length) {
+      const uniqueSerials = new Set(
+        failedSerials
+          .map((value) => String(value?.serial_number ?? value?.serialNumber ?? value ?? '').trim())
+          .filter(Boolean),
+      );
+      if (uniqueSerials.size > 0) return uniqueSerials.size;
+    }
+
+    // Older returnable rows keep the failed serial IDs in this remarks section.
+    const remarks = String(row?.remarks || row?.reason || '');
+    const failedRemarks = remarks.match(/NOT\s*OK\s+Remarks\s*:\s*([\s\S]*)/i);
+    if (failedRemarks) {
+      const serialIds = new Set(
+        Array.from(failedRemarks[1].matchAll(/\[([^\]]+)\]/g))
+          .map((match) => String(match[1] || '').trim())
+          .filter(Boolean),
+      );
+      if (serialIds.size > 0) return serialIds.size;
+    }
+
+    // `quantity` is the failed quantity on the Returnable-QC Outward row.
+    return toPositiveNumber(
+      row?.quantity ?? row?.qty ?? row?.no_of_components ?? row?.noOfComponents,
+    );
+  }
+
+  const explicitFailedQty = [
+    row?.failedQty,
+    row?.failed_qty,
+    row?.failedQuantity,
+    row?.failed_quantity,
+    row?.qc_failed_quantity,
+  ]
+    .map(toPositiveNumber)
+    .find((value) => value > 0);
+  if (explicitFailedQty) return explicitFailedQty;
+
+  const failedRows = getQcFailedRows(row);
+  if (failedRows.length) {
+    return failedRows.reduce((total, item) => {
+      const quantity = toPositiveNumber(
+        item?.failed_quantity ?? item?.failed_qty ?? item?.qty ?? item?.quantity,
+      );
+      return total + (quantity || 1);
+    }, 0);
+  }
+
+  return toPositiveNumber(
+    row?.qty ??
+      row?.quantity ??
+      row?.no_of_components ??
+      row?.noOfComponents,
+  );
+}
+
 function normalizeOutwardTypeKey(value) {
   if (!value) return "";
   const key = String(value).trim().toLowerCase();
@@ -1128,6 +1248,7 @@ function OutwardPage() {
 
     return {
       ...item,
+      failedQty: getFailedQcQuantity(item),
       outDate: item.outDate || item.date || item.out_date || "",
       time: item.time || "",
       gatePass: item.gatePass || item.gate_pass || item.code || "",
@@ -3069,7 +3190,7 @@ const columns =
           className: "text-center",
           render: (row) => (
             <span className="text-[14px] font-semibold">
-              {Number(row?.failedQty || row?.qty || 0)}
+              {getFailedQcQuantity(row)}
             </span>
           ),
         },
@@ -3696,11 +3817,7 @@ right={
                     Failed Qty
                   </span>
                   <span className="text-right font-semibold text-foreground">
-                    {Number(
-                      refundDialogRow?.failedQty ||
-                        refundDialogRow?.qty ||
-                        0
-                    )}
+                    {getFailedQcQuantity(refundDialogRow)}
                   </span>
                 </div>
 
@@ -3853,12 +3970,7 @@ right={
                     Replacement Qty
                   </span>
                   <span className="text-right font-semibold text-foreground">
-                    {Number(
-                      replacementDialogRow?.failedQty ||
-                        replacementDialogRow?.qty ||
-                        replacementDialogRow?.quantity ||
-                        0
-                    )}
+                    {getFailedQcQuantity(replacementDialogRow)}
                   </span>
                 </div>
               </div>
