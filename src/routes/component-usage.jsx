@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
-import { ArrowDown, ArrowUp, ArrowUpDown, Loader2 } from "lucide-react";
-import { useCostDetails } from "@/components/app/SerialCostDetails";
+import { Loader2 } from "lucide-react";
 
 import { PageShell, PageHeader } from "@/components/app/PageShell";
 import config from "@/config";
@@ -90,28 +89,10 @@ const normalizeStatus = (value) =>
     .trim()
     .toUpperCase();
 
-const normalizeMetadata = (value) => {
-  if (
-    value &&
-    typeof value === "object" &&
-    !Array.isArray(value)
-  ) {
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    return (
-      value.find(
-        (item) =>
-          item &&
-          typeof item === "object" &&
-          !Array.isArray(item),
-      ) || {}
-    );
-  }
-
-  return {};
-};
+const normalizeMetadata = (value) =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : {};
 
 const getMrNumber = (row = {}) =>
   String(
@@ -215,116 +196,12 @@ const getUsageMode = (row = {}) => {
 
   if (
     requestType !== "RETURNABLE" &&
-    [
-      "FLIGHT_TEST",
-      "CUSTOMER_DEMO",
-      "QC_CHECK",
-      "EVENT",
-      "MISCELLANEOUS_USAGE",
-    ].includes(purpose)
+    ["FLIGHT_TEST", "CUSTOMER_DEMO", "EVENT"].includes(purpose)
   ) {
     return "DRONE";
   }
 
   return "COMPONENTS";
-};
-
-const getUsageMovementId = (row = {}) => {
-  const issueDetails =
-    row?.inventory_issue_details;
-
-  const detailRows = Array.isArray(
-    issueDetails,
-  )
-    ? issueDetails
-    : issueDetails &&
-        typeof issueDetails === "object"
-      ? [issueDetails]
-      : [];
-
-  const movementId = String(
-    row?.movement_id ||
-      row?.movementId ||
-      detailRows.find(
-        (detail) =>
-          detail &&
-          typeof detail === "object" &&
-          (
-            detail.movement_id ||
-            detail.movementId
-          ),
-      )?.movement_id ||
-      detailRows.find(
-        (detail) =>
-          detail &&
-          typeof detail === "object" &&
-          detail.movementId,
-      )?.movementId ||
-      "",
-  ).trim();
-
-  if (movementId) {
-    return movementId;
-  }
-
-  /*
-   * Legacy fallback:
-   * rows created by one direct Drone movement share the same
-   * purpose/date/return-date/remarks. This keeps those component rows
-   * together without multiplying the selected Drone Quantity.
-   */
-  return [
-    normalizeStatus(row?.purpose),
-    String(row?.requested_date || "").trim(),
-    String(row?.return_due_date || "").trim(),
-    String(row?.remarks || "").trim(),
-  ].join("|");
-};
-
-const getLinkedComponentMrNumber = (row = {}) => {
-  const details = Array.isArray(row.inventory_issue_details)
-    ? row.inventory_issue_details
-    : [];
-  return String(
-    details.find((detail) => detail?.linked_component_mr_number)
-      ?.linked_component_mr_number || "",
-  ).trim();
-};
-
-const getDroneMovementQuantity = (
-  items = [],
-) => {
-  const quantities = (
-    Array.isArray(items) ? items : []
-  )
-    .map((item) =>
-      Number(
-        item?.drone_quantity ??
-          item?.droneQuantity ??
-          item?.quantity ??
-          item?.issued_quantity ??
-          item?.requested_quantity ??
-          item?.qty ??
-          0,
-      ),
-    )
-    .filter(
-      (value) =>
-        Number.isFinite(value) &&
-        value > 0,
-    );
-
-  /*
-   * IMPORTANT:
-   * move-from-in-drone creates one ComponentUsage row per component,
-   * and every row carries the SAME selected drone quantity.
-   *
-   * Example: selected Drone Qty = 2 with an 8-component BOM gives
-   * eight usage rows with quantity=2. The table must show 2, not 16.
-   */
-  return quantities.length
-    ? Math.max(...quantities)
-    : 0;
 };
 
 const getComponentLabel = (item = {}) => {
@@ -341,6 +218,17 @@ const getComponentLabel = (item = {}) => {
     "Component";
 
   return code ? `${code} - ${name}` : name;
+};
+
+const getReturnableComponentId = (item = {}) => {
+  const code = String(
+    item.component_code ||
+      item.componentCode ||
+      item.component?.component_id ||
+      "",
+  ).trim();
+
+  return code || getComponentLabel(item);
 };
 
 const getItemSerials = (item = {}) => {
@@ -399,6 +287,66 @@ const getItemSerials = (item = {}) => {
   });
 
   return Array.from(new Set(values));
+};
+
+const getItemDisplaySerials = (item = {}) => {
+  const supplied = item?.display_issued_serial_numbers;
+  if (Array.isArray(supplied) && supplied.length) {
+    return Array.from(
+      new Set(
+        supplied
+          .map((value) => String(value || "").trim())
+          .filter(Boolean),
+      ),
+    );
+  }
+
+  const issueDetails = item?.inventory_issue_details;
+  const detailRows = Array.isArray(issueDetails)
+    ? issueDetails
+    : issueDetails && typeof issueDetails === "object"
+      ? [issueDetails]
+      : [];
+  const inventoryIdBySerial = new Map();
+
+  detailRows.forEach((detail) => {
+    const inventoryId = Number(detail?.inventory_id);
+    if (!Number.isInteger(inventoryId) || inventoryId <= 0) return;
+    [
+      detail?.serial_numbers,
+      detail?.issued_serial_numbers,
+      detail?.selected_serials,
+      detail?.serials,
+    ].forEach((serialList) => {
+      if (!Array.isArray(serialList)) return;
+      serialList.forEach((serial) => {
+        const key = String(serial || "").trim();
+        if (key) inventoryIdBySerial.set(key, inventoryId);
+      });
+    });
+  });
+
+  return getItemSerials(item).map((serial) => {
+    if (/^C_\d+S\d+$/i.test(serial)) return serial;
+    const internal = serial.match(/^CINV_.+_S(\d+)$/i);
+    const inventoryId = inventoryIdBySerial.get(serial);
+    if (!internal || !inventoryId) {
+      return /^CINV_/i.test(serial) ? "Serial unavailable" : serial;
+    }
+    return `C_${String(inventoryId).padStart(5, "0")}S${String(
+      Number(internal[1]),
+    ).padStart(5, "0")}`;
+  });
+};
+
+const getItemDisplayIssueDetails = (item = {}) => {
+  const issueDetails =
+    item?.display_inventory_issue_details ??
+    item?.inventory_issue_details;
+  if (Array.isArray(issueDetails)) return issueDetails;
+  return issueDetails && typeof issueDetails === "object"
+    ? [issueDetails]
+    : [];
 };
 
 const getGroupStatus = (group) => {
@@ -476,16 +424,6 @@ const getGroupStatus = (group) => {
 
     const restoreReady =
       metadata.procurement_restore_ready === true;
-
-    const restoreStatus = normalizeStatus(
-      metadata.restore_status ||
-        metadata.procurement_restore_status ||
-        "",
-    );
-
-    if (restoreStatus === "PENDING_PROCUREMENT") {
-      return "RESTORE_PENDING_PROCUREMENT";
-    }
 
     const restorePo =
       String(
@@ -612,32 +550,18 @@ const getStatusLabel = (status) => {
     MR_COMPLETED: "MR Completed",
     ISSUED_TO_ENGINEER: "Issued to Engineer",
     RETURNED: "Returned",
-
-    /*
-     * Inventory-side Returnable workflow labels.
-     *
-     * IMPORTANT:
-     * Engineer does not see these downstream statuses after hand-back.
-     * Once Engineer returns the item, Engineer is permanently shown
-     * "Returned". Inventory continues through the operational workflow.
-     */
-    RETURNED_QC_PENDING: "QC Pending",
-    QC_FAILED_PENDING_MANAGER:
-      "QC Checked - Pending Manager",
-    QC_FAILED_PENDING_FINANCE:
-      "QC Failed - Pending Finance Approval",
+    RETURNED_QC_PENDING: "Returned - QC Pending",
+    QC_FAILED_PENDING_MANAGER: "QC Failed - Pending Manager",
+    QC_FAILED_PENDING_FINANCE: "QC Failed - Pending Finance",
     QC_FAILED: "QC Failed",
-    QC_PASSED_DRONE_READY:
-      "QC Completed",
-    QC_PASSED_RETURNED_TO_STORE:
-      "QC Completed - In Store",
+    QC_PASSED_DRONE_READY: "QC Passed - Drone Ready",
+    QC_PASSED_RETURNED_TO_STORE: "QC Passed - Returned to In Store",
     RESTORE_PENDING_PROCUREMENT:
-      "QC Failed - Restore Requested",
-    RESTORE_PO_RAISED:
-      "QC Failed - Restore PO Raised",
+      "Finance Approved - Restore Pending Procurement",
+    RESTORE_PO_RAISED: "Restore PO Raised",
     DRONE_QC_DISPOSITION_COMPLETED:
-      "QC Disposition Completed",
-    FINAL_SCRAP_COMPLETED: "Scrapped",
+      "Drone QC Disposition Completed",
+    FINAL_SCRAP_COMPLETED: "Final Scrap Completed",
     REJECTED: "Rejected - Workflow Stopped",
   };
 
@@ -645,7 +569,6 @@ const getStatusLabel = (status) => {
 };
 
 export default function ReturnablePage() {
-  const { openCostDetails, costDetailsPage } = useCostDetails();
   const { user, activeRole } = useAuth();
   const location = useLocation();
 
@@ -664,57 +587,6 @@ export default function ReturnablePage() {
     "inventory",
     "admin",
   ].includes(role);
-
-  /*
-   * ---------------------------------------------------------------
-   * ROLE-SPECIFIC RETURNABLE STATUS
-   * ---------------------------------------------------------------
-   *
-   * Engineer workflow ENDS when Engineer hands the issued Returnable
-   * item/drone back to Inventory.
-   *
-   * From that moment onward:
-   *   Engineer  -> always sees "Returned"
-   *   Inventory -> sees the real downstream workflow:
-   *                QC Pending
-   *                QC Checked - Pending Manager
-   *                Reorder Approved - Pending Procurement
-   *                Reorder PO Raised - Pending Finance
-   *                Moved to In Store / Scrapped / etc.
-   *
-   * received_date is written by the engineer-return backend action and
-   * remains on the ComponentUsage record during every later QC/approval
-   * stage, so it is the stable boundary between Engineer and Inventory.
-   */
-  const hasEngineerReturned = (group) => {
-    if (!group || group.virtual) {
-      return false;
-    }
-
-    const items = Array.isArray(group.items)
-      ? group.items
-      : [];
-
-    return items.some(
-      (item) =>
-        Boolean(item?.received_date) ||
-        Boolean(item?.receivedDate),
-    );
-  };
-
-  const getVisibleGroupStatus = (group) => {
-    const actualStatus =
-      getGroupStatus(group);
-
-    if (
-      role === "engineer" &&
-      hasEngineerReturned(group)
-    ) {
-      return "RETURNED";
-    }
-
-    return actualStatus;
-  };
 
   /*
    * Engineer/Admin hand-back permission.
@@ -754,11 +626,6 @@ export default function ReturnablePage() {
 
   const [activePurpose, setActivePurpose] =
     useState("FLIGHT_TEST");
-
-  const [tableSort, setTableSort] = useState({
-    key: "",
-    direction: "",
-  });
 
   const [details, setDetails] =
     useState(null);
@@ -1115,18 +982,8 @@ export default function ReturnablePage() {
         return;
       }
 
-      const mode =
-        getUsageMode(row);
-
-      const movementId =
-        mode === "DRONE"
-          ? getUsageMovementId(row)
-          : "";
-
       const key =
-        mode === "DRONE"
-          ? `${mrNumber}|${purpose}|${movementId}`
-          : `${mrNumber}|${purpose}`;
+        `${mrNumber}|${purpose}`;
 
       const sourceMr =
         sourceMrByReference.get(
@@ -1200,25 +1057,14 @@ export default function ReturnablePage() {
             "",
           remarks:
             row.remarks || "",
-          mode,
-          linkedMrNumber:
-            mode === "DRONE"
-              ? getLinkedComponentMrNumber(row)
-              : sourceMr?.source_drone_mr_number || "",
-          droneQuantity: 0,
+          mode:
+            getUsageMode(row),
           items: [],
         });
       }
 
       const currentGroup =
         map.get(key);
-
-      if (!currentGroup.linkedMrNumber) {
-        currentGroup.linkedMrNumber =
-          currentGroup.mode === "DRONE"
-            ? getLinkedComponentMrNumber(row)
-            : sourceMr?.source_drone_mr_number || "";
-      }
 
       if (!currentGroup.project) {
         currentGroup.project =
@@ -1235,13 +1081,6 @@ export default function ReturnablePage() {
       }
 
       currentGroup.items.push(row);
-
-      if (currentGroup.mode === "DRONE") {
-        currentGroup.droneQuantity =
-          getDroneMovementQuantity(
-            currentGroup.items,
-          );
-      }
     });
 
     /*
@@ -1294,11 +1133,6 @@ export default function ReturnablePage() {
           mr.approval_status ||
           group.approvalStatus;
 
-        group.linkedMrNumber =
-          mr.source_drone_mr_number ||
-          group.linkedMrNumber ||
-          "";
-
         return;
       }
 
@@ -1338,7 +1172,7 @@ export default function ReturnablePage() {
         requestedDate:
           mr.date,
         returnDate:
-          mr.returnable_date || mr.required_date,
+          mr.required_date,
         mrStatus,
         approvalStatus:
           mr.approval_status || "",
@@ -1348,8 +1182,6 @@ export default function ReturnablePage() {
         remarks:
           mr.remarks || "",
         mode: "COMPONENTS",
-        linkedMrNumber:
-          mr.source_drone_mr_number || "",
         items: requestItems.map(
           (item, index) => ({
             ...item,
@@ -1376,11 +1208,6 @@ export default function ReturnablePage() {
                   item.qty ||
                   0,
               ),
-            uom:
-              item.unit ||
-              item.uom ||
-              item.unit_of_measurements ||
-              "",
             issued_serial_numbers: [],
           }),
         ),
@@ -1412,171 +1239,6 @@ export default function ReturnablePage() {
     activePurpose,
   ]);
 
-  const getReturnableSortValue = (
-    group,
-    key,
-  ) => {
-    switch (key) {
-      case "mrNumber":
-        return group?.mrNumber || "";
-
-      case "requester":
-        return group?.requester || "";
-
-      case "project":
-        return group?.project || "";
-
-      case "mode":
-        return group?.mode === "DRONE"
-          ? "Drone"
-          : "Components";
-
-      case "droneQuantity":
-        return Number(
-          group?.droneQuantity ||
-            getDroneMovementQuantity(
-              group?.items || [],
-            ) ||
-            0,
-        );
-
-      case "requestedDate":
-        return group?.requestedDate || "";
-
-      case "returnDate":
-        return group?.returnDate || "";
-
-      case "summary":
-        return group?.mode === "DRONE"
-          ? "Existing In-Drone assembly"
-          : (Array.isArray(group?.items)
-              ? group.items
-              : []
-            )
-              .map(
-                (item) =>
-                  `${getComponentLabel(
-                    item,
-                  )} ${Number(
-                    item?.quantity || 0,
-                  )}`,
-              )
-              .join(" ");
-
-      case "status":
-        return getStatusLabel(
-          getVisibleGroupStatus(group),
-        );
-
-      default:
-        return "";
-    }
-  };
-
-  const sortedGroups = useMemo(() => {
-    if (
-      !tableSort.key ||
-      !tableSort.direction
-    ) {
-      return groups;
-    }
-
-    return [...groups].sort(
-      (left, right) => {
-        const leftValue =
-          getReturnableSortValue(
-            left,
-            tableSort.key,
-          );
-
-        const rightValue =
-          getReturnableSortValue(
-            right,
-            tableSort.key,
-          );
-
-        let comparison = 0;
-
-        if (
-          Number.isFinite(
-            Number(leftValue),
-          ) &&
-          Number.isFinite(
-            Number(rightValue),
-          ) &&
-          String(leftValue).trim() !== "" &&
-          String(rightValue).trim() !== ""
-        ) {
-          comparison =
-            Number(leftValue) -
-            Number(rightValue);
-        } else {
-          comparison = String(
-            leftValue ?? "",
-          ).localeCompare(
-            String(rightValue ?? ""),
-            undefined,
-            {
-              numeric: true,
-              sensitivity: "base",
-            },
-          );
-        }
-
-        return tableSort.direction ===
-          "asc"
-          ? comparison
-          : -comparison;
-      },
-    );
-  }, [
-    groups,
-    tableSort,
-    role,
-  ]);
-
-  const toggleReturnableSort = (key) => {
-    setTableSort((previous) => {
-      if (previous.key !== key) {
-        return {
-          key,
-          direction: "asc",
-        };
-      }
-
-      if (
-        previous.direction === "asc"
-      ) {
-        return {
-          key,
-          direction: "desc",
-        };
-      }
-
-      return {
-        key: "",
-        direction: "",
-      };
-    });
-  };
-
-  const ReturnableSortIcon = ({
-    sortKey,
-  }) => {
-    if (tableSort.key !== sortKey) {
-      return (
-        <ArrowUpDown className="size-3.5 text-slate-400" />
-      );
-    }
-
-    return tableSort.direction ===
-      "asc" ? (
-      <ArrowUp className="size-3.5 text-primary" />
-    ) : (
-      <ArrowDown className="size-3.5 text-primary" />
-    );
-  };
-
   useEffect(() => {
     if (!details) return;
 
@@ -1600,13 +1262,6 @@ export default function ReturnablePage() {
     );
     return local.toISOString().slice(0, 10);
   };
-
-  const hasCompletedMoveToReturn = (group) =>
-    Boolean(
-      canMoveToReturn &&
-        group &&
-        hasEngineerReturned(group),
-    );
 
   const canEngineerMoveToReturn = (group) => {
     if (!canMoveToReturn || !group) {
@@ -1769,59 +1424,22 @@ export default function ReturnablePage() {
         );
       }
 
-      const returnResponse =
-        await fetchAuthenticatedJson(
-          `${config.baseURL}/component-usage/${encodeURIComponent(
-            usage.id,
-          )}/engineer-return/`,
-          {
-            method: "POST",
-            body: JSON.stringify({
-              return_date:
-                moveReturnDate,
-              remarks:
-                String(
-                  moveReturnRemarks || "",
-                ).trim(),
-            }),
-          },
-        );
-
-      /*
-       * Update this page immediately from the authoritative response instead
-       * of waiting for another list request. This makes Move to Return vanish
-       * as soon as the backend confirms the hand-back.
-       */
-      const returnedRows =
-        Array.isArray(
-          returnResponse?.rows,
-        )
-          ? returnResponse.rows
-          : [];
-
-      if (returnedRows.length) {
-        const returnedById = new Map(
-          returnedRows.map((row) => [
-            String(row?.id),
-            row,
-          ]),
-        );
-
-        setUsageRows((previous) =>
-          previous.map((row) =>
-            returnedById.has(
-              String(row?.id),
-            )
-              ? {
-                  ...row,
-                  ...returnedById.get(
-                    String(row?.id),
-                  ),
-                }
-              : row,
-          ),
-        );
-      }
+      await fetchAuthenticatedJson(
+        `${config.baseURL}/component-usage/${encodeURIComponent(
+          usage.id,
+        )}/engineer-return/`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            return_date:
+              moveReturnDate,
+            remarks:
+              String(
+                moveReturnRemarks || "",
+              ).trim(),
+          }),
+        },
+      );
 
       window.dispatchEvent(
         new Event(
@@ -2115,81 +1733,15 @@ export default function ReturnablePage() {
     value,
   ) => {
     setSerialQcRows((previous) =>
-      previous.map((row) => {
-        if (row.key !== key) {
-          return row;
-        }
-
-        if (
-          field === "condition" &&
-          value === "OK"
-        ) {
-          return {
-            ...row,
-            condition: "OK",
-            remarks: "QC OK",
-          };
-        }
-
-        if (
-          field === "condition" &&
-          value === "NOT_OK"
-        ) {
-          return {
-            ...row,
-            condition: "NOT_OK",
-            remarks:
-              row.condition === "NOT_OK"
-                ? row.remarks
-                : "",
-          };
-        }
-
-        return {
-          ...row,
-          [field]: value,
-        };
-      }),
-    );
-
-    setSerialQcError("");
-  };
-
-  const applyQcResultToAll = (
-    condition,
-  ) => {
-    if (
-      !["OK", "NOT_OK"].includes(
-        condition,
-      )
-    ) {
-      return;
-    }
-
-    setSerialQcRows((previous) =>
-      previous.map((row) => ({
-        ...row,
-        condition,
-        remarks:
-          condition === "OK"
-            ? "QC OK"
-            : "",
-      })),
-    );
-
-    setSerialQcError("");
-  };
-
-  const clearQcResultFromAll = (
-    condition,
-  ) => {
-    setSerialQcRows((previous) =>
       previous.map((row) =>
-        row.condition === condition
+        row.key === key
           ? {
               ...row,
-              condition: "",
-              remarks: "",
+              [field]: value,
+              ...(field === "condition" &&
+              value === "OK"
+                ? { remarks: "" }
+                : {}),
             }
           : row,
       ),
@@ -2197,20 +1749,6 @@ export default function ReturnablePage() {
 
     setSerialQcError("");
   };
-
-  const allSerialQcPassed =
-    serialQcRows.length > 0 &&
-    serialQcRows.every(
-      (row) =>
-        row.condition === "OK",
-    );
-
-  const allSerialQcFailed =
-    serialQcRows.length > 0 &&
-    serialQcRows.every(
-      (row) =>
-        row.condition === "NOT_OK",
-    );
 
   const submitSerialQc = async () => {
     if (
@@ -2239,7 +1777,7 @@ export default function ReturnablePage() {
 
     if (missingResult) {
       setSerialQcError(
-        `Select PASS or FAIL for ${
+        `Select OK or NOT OK for ${
           missingResult.serial_number ||
           `${missingResult.component_label} Unit ${missingResult.unit_index}`
         }.`,
@@ -2258,7 +1796,7 @@ export default function ReturnablePage() {
 
     if (missingRemark) {
       setSerialQcError(
-        `Remarks are required for FAILED serial ${
+        `Remarks are required for NOT OK serial ${
           missingRemark.serial_number ||
           `${missingRemark.component_label} Unit ${missingRemark.unit_index}`
         }.`,
@@ -2656,175 +2194,6 @@ export default function ReturnablePage() {
     getGroupStatus(group) ===
       "RETURNED_QC_PENDING";
 
-  /*
-   * ==========================================================
-   * RETURNABLE COMPONENT COST DETAILS
-   * ==========================================================
-   *
-   * Returnable ComponentUsage rows contain the issued serials, but the
-   * actual purchase/allocated cost belongs to the MR-linked
-   * ProjectInventory row. Match the clicked component to that row and
-   * reuse the common SerialCostDetails screen.
-   */
-  const normalizeCostMatchValue = (value) =>
-    String(value ?? "")
-      .trim()
-      .toUpperCase();
-
-  const getCostMatchValues = (row = {}) => {
-    const component =
-      row?.component &&
-      typeof row.component === "object"
-        ? row.component
-        : {};
-
-    return new Set(
-      [
-        row?.component,
-        row?.component_id,
-        row?.componentId,
-        row?.component_code,
-        row?.componentCode,
-        row?.component_name,
-        row?.componentName,
-        row?.name,
-        component?.id,
-        component?.pk,
-        component?.component_id,
-        component?.component_code,
-        component?.name,
-      ]
-        .filter(
-          (value) =>
-            value !== undefined &&
-            value !== null &&
-            typeof value !== "object" &&
-            String(value).trim(),
-        )
-        .map(normalizeCostMatchValue),
-    );
-  };
-
-  const isSameCostComponent = (
-    left = {},
-    right = {},
-  ) => {
-    const leftValues =
-      getCostMatchValues(left);
-
-    const rightValues =
-      getCostMatchValues(right);
-
-    for (const value of leftValues) {
-      if (rightValues.has(value)) {
-        return true;
-      }
-    }
-
-    return false;
-  };
-
-  const isProjectRowForReturnable = (
-    projectRow = {},
-    group = {},
-  ) => {
-    const targetMr =
-      normalizeCostMatchValue(
-        group?.mrNumber,
-      );
-
-    if (!targetMr) {
-      return true;
-    }
-
-    const references = [
-      projectRow?.source_mr_number,
-      projectRow?.sourceMrNumber,
-      projectRow?.material_request_number,
-      projectRow?.materialRequestNumber,
-      projectRow?.material_request_id,
-      projectRow?.materialRequestId,
-      projectRow?.request_id,
-      projectRow?.mr_id,
-      projectRow?.material_request,
-    ]
-      .filter(
-        (value) =>
-          value !== undefined &&
-          value !== null &&
-          String(value).trim(),
-      )
-      .map(normalizeCostMatchValue);
-
-    return references.includes(
-      targetMr,
-    );
-  };
-
-  const openReturnableComponentCost = (
-    group,
-    item,
-  ) => {
-    const matchingRows =
-      projectInventoryRows.filter(
-        (projectRow) =>
-          isProjectRowForReturnable(
-            projectRow,
-            group,
-          ) &&
-          isSameCostComponent(
-            projectRow,
-            item,
-          ),
-      );
-
-    /*
-     * Prefer a ProjectInventory row that actually has issued/purchased
-     * serial/cost information.
-     */
-    const costRow =
-      matchingRows.find(
-        (row) =>
-          Number(
-            row?.issued_purchased_quantity ??
-              row?.issuedPurchasedQuantity ??
-              0,
-          ) > 0 ||
-          Number(
-            row?.purchased_quantity ??
-              row?.purchasedQuantity ??
-              0,
-          ) > 0 ||
-          Array.isArray(
-            row?.cost_details,
-          ) ||
-          Array.isArray(
-            row?.costDetails,
-          ),
-      ) ||
-      matchingRows[0] ||
-      null;
-
-    if (!costRow) {
-      alert(
-        "Cost details are not available for this component yet. Please ensure the MR-linked Project Inventory / purchase cost data has loaded.",
-      );
-      return;
-    }
-
-    openCostDetails(
-      "projectInventory",
-      costRow,
-    );
-  };
-
-  /*
-   * SerialCostDetails is the same screen already used by Inventory.
-   */
-  if (costDetailsPage) {
-    return costDetailsPage;
-  }
-
   return (
     <PageShell>
       <PageHeader
@@ -2855,45 +2224,15 @@ export default function ReturnablePage() {
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-        <div className="grid grid-cols-[0.42fr_0.9fr_0.85fr_0.95fr_0.62fr_0.58fr_0.68fr_0.68fr_1.45fr_1.05fr_0.78fr] bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          <div className="text-center">
-            S.No
-          </div>
-
-          {[
-            ["mrNumber", "MR ID"],
-            ["requester", "Requester"],
-            ["project", "Project"],
-            ["mode", "Mode"],
-            ["droneQuantity", "Drone Qty"],
-            ["requestedDate", "Request Date"],
-            ["returnDate", "Return Date"],
-            ["summary", "Components / Drone"],
-            ["status", "Status"],
-          ].map(([sortKey, label]) => (
-            <button
-              key={sortKey}
-              type="button"
-              onClick={() =>
-                toggleReturnableSort(
-                  sortKey,
-                )
-              }
-              className={`flex items-center gap-1.5 text-left font-semibold uppercase tracking-wide transition hover:text-foreground ${
-                sortKey ===
-                "droneQuantity"
-                  ? "justify-center text-center"
-                  : ""
-              }`}
-              title={`Sort by ${label}`}
-            >
-              <span>{label}</span>
-              <ReturnableSortIcon
-                sortKey={sortKey}
-              />
-            </button>
-          ))}
-
+        <div className="grid grid-cols-[0.95fr_0.9fr_1fr_0.72fr_0.72fr_0.72fr_1.6fr_1.15fr_0.8fr] bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          <div>MR ID</div>
+          <div>Requester</div>
+          <div>Project</div>
+          <div>Mode</div>
+          <div>Request Date</div>
+          <div>Return Date</div>
+          <div>Components / Drone</div>
+          <div>Status</div>
           <div className="text-center">
             Action
           </div>
@@ -2922,65 +2261,35 @@ export default function ReturnablePage() {
             No Returnable records found for {formatPurpose(activePurpose)}.
           </div>
         ) : (
-          sortedGroups.map((group, index) => {
-            /*
-             * workflowStatus = authoritative backend workflow used by actions.
-             * visibleStatus  = role-specific display status.
-             *
-             * For Engineer, visibleStatus freezes at RETURNED after hand-back.
-             * For Inventory/Admin it continues to follow workflowStatus.
-             */
+          groups.map((group) => {
             const workflowStatus =
               getGroupStatus(group);
 
-            const visibleStatus =
-              getVisibleGroupStatus(group);
-
             const summary =
-              group.mode === "DRONE"
-                ? "Existing In-Drone assembly"
-                : group.items.length
-                  ? group.items
-                      .map(
-                        (item) =>
-                          `${getComponentLabel(
-                            item,
-                          )}-${Number(
-                            item.quantity ||
-                              0,
-                          )}${
-                            String(
-                              item.uom ||
-                                item.unit ||
-                                "",
-                            ).trim()
-                              ? ` ${String(
-                                  item.uom ||
-                                    item.unit ||
-                                    "",
-                                ).trim()}`
-                              : ""
-                          }`,
-                      )
-                      .join(", ")
+              group.items.length
+                ? group.items
+                    .map(
+                      (item) =>
+                        `${getComponentLabel(
+                          item,
+                        )}-${Number(
+                          item.quantity ||
+                            0,
+                        )}`,
+                    )
+                    .join(", ")
+                : group.mode ===
+                    "DRONE"
+                  ? "Existing In-Drone assembly"
                   : "-";
 
             return (
               <div
                 key={group.key}
-                className="grid grid-cols-[0.42fr_0.9fr_0.85fr_0.95fr_0.62fr_0.58fr_0.68fr_0.68fr_1.45fr_1.05fr_0.78fr] items-center border-t border-border px-4 py-4 text-sm"
+                className="grid grid-cols-[0.95fr_0.9fr_1fr_0.72fr_0.72fr_0.72fr_1.6fr_1.15fr_0.8fr] items-center border-t border-border px-4 py-4 text-sm"
               >
-                <div className="text-center font-semibold">
-                  {index + 1}
-                </div>
-
                 <div className="font-semibold">
                   {group.mrNumber}
-                  {group.linkedMrNumber && (
-                    <div className="mt-1 text-xs font-normal text-muted-foreground">
-                      With {group.mode === "DRONE" ? "components" : "drone"} MR: {group.linkedMrNumber}
-                    </div>
-                  )}
                 </div>
 
                 <div>
@@ -2998,24 +2307,6 @@ export default function ReturnablePage() {
                       ? "Drone"
                       : "Components"}
                   </span>
-                </div>
-
-                <div className="text-center">
-                  {group.mode === "DRONE" ? (
-                    <span className="inline-flex min-w-8 items-center justify-center rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-bold text-blue-700 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-300">
-                      {Number(
-                        group.droneQuantity ||
-                          getDroneMovementQuantity(
-                            group.items,
-                          ) ||
-                          0,
-                      )}
-                    </span>
-                  ) : (
-                    <span className="text-muted-foreground">
-                      -
-                    </span>
-                  )}
                 </div>
 
                 <div>
@@ -3037,11 +2328,11 @@ export default function ReturnablePage() {
                 <div>
                   <span
                     className={`inline-flex max-w-[190px] items-center justify-center rounded-full border px-2.5 py-1 text-center text-[11px] font-semibold leading-4 ${getStatusClass(
-                      visibleStatus,
+                      workflowStatus,
                     )}`}
                   >
                     {getStatusLabel(
-                      visibleStatus,
+                      workflowStatus,
                     )}
                   </span>
                 </div>
@@ -3064,37 +2355,37 @@ export default function ReturnablePage() {
                   )}
 
                   {canInventoryAction &&
-                    workflowStatus ===
-                      "RETURNED_QC_PENDING" && (
-                      <button
-                        type="button"
-                        disabled={
-                          serialQcLoading
-                        }
-                        onClick={() =>
-                          void openSerialQc(
-                            group,
-                          )
-                        }
-                        className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-amber-700 disabled:opacity-50"
-                      >
-                        {serialQcLoading
-                          ? "Loading..."
-                          : "QC Check"}
-                      </button>
-                    )}
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void openDetailsWithSerials(
-                        group,
-                      )
-                    }
-                    className="rounded-lg border border-border px-3 py-1.5 text-xs font-semibold transition hover:border-primary hover:text-primary"
-                  >
-                    View Details
-                  </button>
+                  workflowStatus ===
+                    "RETURNED_QC_PENDING" ? (
+                    <button
+                      type="button"
+                      disabled={
+                        serialQcLoading
+                      }
+                      onClick={() =>
+                        void openSerialQc(
+                          group,
+                        )
+                      }
+                      className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-amber-700 disabled:opacity-50"
+                    >
+                      {serialQcLoading
+                        ? "Loading..."
+                        : "QC Check"}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void openDetailsWithSerials(
+                          group,
+                        )
+                      }
+                      className="rounded-lg border border-border px-3 py-1.5 text-xs font-semibold transition hover:border-primary hover:text-primary"
+                    >
+                      View Details
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -3175,7 +2466,7 @@ export default function ReturnablePage() {
               )}
 
               <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-300">
-                This hands the issued item back to Inventory. After submission, the Engineer status remains Returned and the Engineer workflow is complete. Inventory continues separately with QC Pending and all later QC / Manager / Procurement / Finance statuses.
+                This only hands the issued item back to Inventory. Engineer/Admin does not perform QC here. Inventory will receive a notification and the item will appear in Inventory → Returned as QC Pending.
               </div>
             </div>
 
@@ -3215,7 +2506,7 @@ export default function ReturnablePage() {
 
       {details && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/55 p-4">
-          <div className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-2xl border border-border bg-card p-6 shadow-2xl">
+          <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-border bg-card p-6 shadow-2xl">
             <div className="flex items-start justify-between gap-4 border-b border-border pb-4">
               <div>
                 <h2 className="text-xl font-semibold">
@@ -3255,7 +2546,7 @@ export default function ReturnablePage() {
 
                 <div className="mt-1 font-semibold">
                   {getStatusLabel(
-                    getVisibleGroupStatus(
+                    getGroupStatus(
                       details,
                     ),
                   )}
@@ -3308,68 +2599,38 @@ export default function ReturnablePage() {
             </div>
 
             <div className="mt-5 overflow-hidden rounded-xl border border-border">
-              <div className="grid grid-cols-[2fr_1fr_0.7fr_0.8fr] bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <div className="grid grid-cols-[1.6fr_0.8fr_0.6fr] bg-muted/40 px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">
                 <div>Component</div>
                 <div>Category</div>
-                <div className="text-center">Qty</div>
-                <div className="text-center">UOM</div>
+                <div>Qty</div>
               </div>
 
               {details.items.length ? (
                 details.items.map(
                   (item) => {
-                    const serials =
-                      getItemSerials(
-                        item,
-                      );
-
                     return (
                       <div
                         key={item.id}
-                        className="grid grid-cols-[2fr_1fr_0.7fr_0.8fr] items-center border-t border-border px-4 py-3 text-sm"
+                        className="grid grid-cols-[1.6fr_0.8fr_0.6fr] border-t border-border px-4 py-3 text-sm"
                       >
-                        <div className="min-w-0">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              openReturnableComponentCost(
-                                details,
-                                item,
-                              )
-                            }
-                            className="max-w-full break-words text-left font-semibold text-primary underline-offset-4 transition hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
-                            title="Click to view serial numbers and cost details"
-                          >
-                            {getComponentLabel(
-                              item,
-                            )}
-                          </button>
-
-                          <div className="mt-1 text-[11px] text-muted-foreground">
-                            {serials.length
-                              ? `${serials.length} tracked serial(s) · Click component for serial-wise cost`
-                              : "Click component for available cost details"}
-                          </div>
+                        <div className="font-medium">
+                          {getReturnableComponentId(
+                            item,
+                          )}
                         </div>
 
-                        <div className="break-words">
+                        <div>
                           {item.component_category ||
                             item.component_type ||
                             item.category ||
                             "-"}
                         </div>
 
-                        <div className="text-center font-semibold">
+                        <div>
                           {Number(
                             item.quantity ||
                               0,
                           )}
-                        </div>
-
-                        <div className="text-center">
-                          {item.uom ||
-                            item.unit ||
-                            "-"}
                         </div>
                       </div>
                     );
@@ -3383,14 +2644,8 @@ export default function ReturnablePage() {
             </div>
 
             {details.items.some((item) => {
-              const metadataRows = Array.isArray(
-                item?.inventory_issue_details,
-              )
-                ? item.inventory_issue_details
-                : item?.inventory_issue_details &&
-                    typeof item.inventory_issue_details === "object"
-                  ? [item.inventory_issue_details]
-                  : [];
+              const metadataRows =
+                getItemDisplayIssueDetails(item);
 
               return metadataRows.some(
                 (metadata) =>
@@ -3421,16 +2676,7 @@ export default function ReturnablePage() {
                 {details.items.flatMap(
                   (item) => {
                     const metadataRows =
-                      Array.isArray(
-                        item?.inventory_issue_details,
-                      )
-                        ? item.inventory_issue_details
-                        : item?.inventory_issue_details &&
-                            typeof item.inventory_issue_details === "object"
-                          ? [
-                              item.inventory_issue_details,
-                            ]
-                          : [];
+                      getItemDisplayIssueDetails(item);
 
                     const qcItems =
                       metadataRows.flatMap(
@@ -3455,7 +2701,7 @@ export default function ReturnablePage() {
                             className="grid grid-cols-[1.5fr_1.1fr_0.8fr_1.8fr] items-center gap-3 border-t border-border px-4 py-3 text-sm"
                           >
                             <div className="font-medium">
-                              {getComponentLabel(
+                              {getReturnableComponentId(
                                 item,
                               )}
                             </div>
@@ -3567,7 +2813,7 @@ export default function ReturnablePage() {
                 </div>
 
                 <p className="mt-1 text-sm text-amber-800 dark:text-amber-300">
-                  Check every returned serial number individually. Each serial must be marked PASS or FAIL. PASS automatically adds QC OK. FAIL requires remarks.
+                  Check every returned serial number individually. Each serial must be marked OK or NOT OK, and NOT OK requires remarks.
                 </p>
 
                 <div className="mt-4 flex justify-end">
@@ -3666,85 +2912,6 @@ export default function ReturnablePage() {
               </div>
             </div>
 
-            <div className="mt-5 rounded-xl border border-border bg-muted/20 p-4">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                  <div className="text-sm font-semibold text-foreground">
-                    Apply QC Result to All
-                  </div>
-
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    PASS ALL marks every serial as PASS and automatically fills Remarks as
-                    <strong> QC OK</strong>. FAIL ALL marks every serial as FAIL; remarks are mandatory before submission.
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-3">
-                  <label
-                    className={`flex cursor-pointer items-center gap-2 rounded-lg border px-4 py-2 text-sm font-semibold transition ${
-                      allSerialQcPassed
-                        ? "border-emerald-600 bg-emerald-600 text-white"
-                        : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-500"
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={
-                        allSerialQcPassed
-                      }
-                      onChange={(event) => {
-                        if (
-                          event.target.checked
-                        ) {
-                          applyQcResultToAll(
-                            "OK",
-                          );
-                        } else {
-                          clearQcResultFromAll(
-                            "OK",
-                          );
-                        }
-                      }}
-                      className="size-4"
-                    />
-
-                    PASS ALL
-                  </label>
-
-                  <label
-                    className={`flex cursor-pointer items-center gap-2 rounded-lg border px-4 py-2 text-sm font-semibold transition ${
-                      allSerialQcFailed
-                        ? "border-rose-600 bg-rose-600 text-white"
-                        : "border-rose-200 bg-rose-50 text-rose-700 hover:border-rose-500"
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={
-                        allSerialQcFailed
-                      }
-                      onChange={(event) => {
-                        if (
-                          event.target.checked
-                        ) {
-                          applyQcResultToAll(
-                            "NOT_OK",
-                          );
-                        } else {
-                          clearQcResultFromAll(
-                            "NOT_OK",
-                          );
-                        }
-                      }}
-                      className="size-4"
-                    />
-
-                    FAIL ALL
-                  </label>
-                </div>
-              </div>
-            </div>
-
             <div className="mt-5 overflow-hidden rounded-xl border border-border">
               <div className="grid grid-cols-[1.55fr_1.1fr_1.2fr_2fr] bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 <div>Component</div>
@@ -3780,116 +2947,47 @@ export default function ReturnablePage() {
                       )}
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-3">
-                      <label
-                        className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
-                          row.condition === "OK"
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateSerialQcRow(
+                            row.key,
+                            "condition",
+                            "OK",
+                          )
+                        }
+                        className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
+                          row.condition ===
+                          "OK"
                             ? "border-emerald-600 bg-emerald-600 text-white"
                             : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-500"
                         }`}
                       >
-                        <input
-                          type="checkbox"
-                          checked={
-                            row.condition ===
-                            "OK"
-                          }
-                          onChange={(event) => {
-                            if (
-                              event.target.checked
-                            ) {
-                              updateSerialQcRow(
-                                row.key,
-                                "condition",
-                                "OK",
-                              );
-                            } else {
-                              setSerialQcRows(
-                                (previous) =>
-                                  previous.map(
-                                    (item) =>
-                                      item.key ===
-                                      row.key
-                                        ? {
-                                            ...item,
-                                            condition:
-                                              "",
-                                            remarks:
-                                              "",
-                                          }
-                                        : item,
-                                  ),
-                              );
+                        OK
+                      </button>
 
-                              setSerialQcError(
-                                "",
-                              );
-                            }
-                          }}
-                          className="size-4"
-                        />
-                        PASS
-                      </label>
-
-                      <label
-                        className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
-                          row.condition === "NOT_OK"
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateSerialQcRow(
+                            row.key,
+                            "condition",
+                            "NOT_OK",
+                          )
+                        }
+                        className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
+                          row.condition ===
+                          "NOT_OK"
                             ? "border-rose-600 bg-rose-600 text-white"
                             : "border-rose-200 bg-rose-50 text-rose-700 hover:border-rose-500"
                         }`}
                       >
-                        <input
-                          type="checkbox"
-                          checked={
-                            row.condition ===
-                            "NOT_OK"
-                          }
-                          onChange={(event) => {
-                            if (
-                              event.target.checked
-                            ) {
-                              updateSerialQcRow(
-                                row.key,
-                                "condition",
-                                "NOT_OK",
-                              );
-                            } else {
-                              setSerialQcRows(
-                                (previous) =>
-                                  previous.map(
-                                    (item) =>
-                                      item.key ===
-                                      row.key
-                                        ? {
-                                            ...item,
-                                            condition:
-                                              "",
-                                            remarks:
-                                              "",
-                                          }
-                                        : item,
-                                  ),
-                              );
-
-                              setSerialQcError(
-                                "",
-                              );
-                            }
-                          }}
-                          className="size-4"
-                        />
-                        FAIL
-                      </label>
+                        NOT OK
+                      </button>
                     </div>
 
                     <div>
-                      {row.condition ===
-                        "NOT_OK" && (
-                        <div className="mb-1 text-[11px] font-semibold text-rose-600">
-                          Remarks *
-                        </div>
-                      )}
-
                       <input
                         type="text"
                         value={
@@ -3904,31 +3002,18 @@ export default function ReturnablePage() {
                         }
                         disabled={
                           row.condition ===
-                            "OK" ||
-                          !row.condition
-                        }
-                        required={
-                          row.condition ===
-                          "NOT_OK"
+                          "OK"
                         }
                         placeholder={
                           row.condition ===
                           "NOT_OK"
-                            ? "Enter failure remarks (required)"
+                            ? "Remarks required for NOT OK"
                             : row.condition ===
                                 "OK"
-                              ? "QC OK"
-                              : "Select PASS or FAIL first"
+                              ? "Not required"
+                              : "Select QC result first"
                         }
-                        className={`w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none disabled:cursor-not-allowed disabled:bg-muted/50 disabled:text-muted-foreground ${
-                          row.condition ===
-                            "NOT_OK" &&
-                          !String(
-                            row.remarks || "",
-                          ).trim()
-                            ? "border-rose-400 focus:border-rose-600"
-                            : "border-border focus:border-primary"
-                        }`}
+                        className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary disabled:cursor-not-allowed disabled:bg-muted/50 disabled:text-muted-foreground"
                       />
                     </div>
                   </div>
@@ -3953,7 +3038,7 @@ export default function ReturnablePage() {
 
             <div className="mt-6 flex items-center justify-between gap-3">
               <div className="text-xs text-muted-foreground">
-                All serials/components must have PASS or FAIL selected. Remarks are mandatory for every FAIL.
+                All serials/components must have a QC result before submission.
               </div>
 
               <div className="flex gap-2">

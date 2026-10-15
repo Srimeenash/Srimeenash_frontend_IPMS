@@ -193,6 +193,7 @@ const [bomList, setBomList] = useState([]);
 const [showComponentModal, setShowComponentModal] = useState(false);
 const [componentsList, setComponentsList] = useState([]);
 const [inventoryCounts, setInventoryCounts] = useState({});
+const [inventoryReservationDetails, setInventoryReservationDetails] = useState({});
 const CATEGORY_CHOICES = [
   "ACCESSORIES",
   "AIRFRAMES",
@@ -601,6 +602,52 @@ const getInventoryQuantityForBomRow = (
 };
 
 
+const getInventoryReservationsForBomRow = (row) => {
+  const canonicalKey = getCanonicalComponentKey(row, componentsList);
+  const reservations = canonicalKey
+    ? inventoryReservationDetails[canonicalKey]
+    : null;
+
+  return Array.isArray(reservations)
+    ? reservations
+    : [];
+};
+
+const renderInventoryAvailability = (row) => {
+  const availableQuantity = getInventoryQuantityForBomRow(row);
+  const reservations = getInventoryReservationsForBomRow(row);
+  const reservedQuantity = reservations.reduce(
+    (total, reservation) =>
+      total + Math.max(Number(reservation.reserved_quantity) || 0, 0),
+    0,
+  );
+
+  return (
+    <div className="min-w-[140px] space-y-1 text-center">
+      <div className="font-medium">{availableQuantity}</div>
+      {reservedQuantity > 0 && (
+        <details className="text-left">
+          <summary className="cursor-pointer select-none text-[11px] font-medium text-amber-700 underline decoration-dotted">
+            {reservedQuantity} reserved · View MR details
+          </summary>
+          <div className="mt-1 max-h-28 overflow-y-auto rounded-md border border-amber-200 bg-amber-50 p-2 text-[11px] leading-5 text-amber-900">
+            {reservations.map((reservation, index) => (
+              <div
+                key={`${reservation.material_request_id || "mr"}-${index}`}
+              >
+                {reservation.material_request_id || "Material Request"}
+                {" — "}
+                {reservation.reserved_quantity} reserved
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+};
+
+
 const collectQcRows = (value) => {
   if (Array.isArray(value)) {
     return value.filter(
@@ -841,112 +888,93 @@ const isInwardGeneratedInventoryRow = (
 const loadInventoryCounts =
   async () => {
     try {
-      const [componentData, inventoryData] =
+      const [componentData, availabilityData] =
         await Promise.all([
           fetchAuthenticatedJson(
             `${config.baseURL}/components/components/?page_size=5000`,
+            { cache: "no-store" },
           ).catch(() => []),
           fetchAuthenticatedJson(
-            `${config.baseURL}/inventory/inventory/?page_size=5000`,
-          ).catch(() => []),
+            `${config.baseURL}/materialrequest/material-requests/available-inventory/`,
+            { cache: "no-store" },
+          ),
         ]);
 
-      const componentRows =
-        toApiList(componentData);
-
-      const inventoryRows =
-        toApiList(inventoryData);
-
+      const componentRows = toApiList(componentData);
+      const availabilityRows = toApiList(availabilityData);
       setComponentsList(componentRows);
 
-      /*
-       * Store quantities by one canonical component identity only.
-       *
-       * Do not store quantity under component names, inventory codes,
-       * partial labels, extracted digits or other aliases. Those broad
-       * aliases caused stock from Wings to appear against Propeller.
-       */
       const counts = {};
+      const reservationDetails = {};
 
-      inventoryRows.forEach((item) => {
-        if (
-          item.issued === true ||
-          item.issued === 1
-        ) {
-          return;
-        }
-
-        const inventoryScope = String(
-          item.inventory_scope ||
-            item.inventoryScope ||
-            "",
-        )
-          .trim()
-          .toLowerCase();
-
-        const sourceMrNumber = String(
-          item.source_mr_number ||
-            item.sourceMrNumber ||
-            item.material_request_number ||
-            item.material_request_id ||
-            item.request_id ||
-            "",
-        ).trim();
-
-        if (
-          inventoryScope === "project" ||
-          sourceMrNumber
-        ) {
-          return;
-        }
-
-        const quantity =
-          getAvailableQuantity(item);
-
-        if (
-          !Number.isFinite(quantity) ||
-          quantity <= 0
-        ) {
-          return;
-        }
-
-        const canonicalKey =
-          getCanonicalComponentKey(
-            item,
-            componentRows,
-          );
+      availabilityRows.forEach((item) => {
+        const componentCode =
+          item.component_code || item.component_id || "";
+        const componentDatabaseId =
+          item.component_db_id ?? item.component_pk ?? item.component;
+        const canonicalKey = getCanonicalComponentKey(
+          {
+            component: componentDatabaseId,
+            component_db_id: componentDatabaseId,
+            component_code: componentCode,
+            component_id: componentCode,
+          },
+          componentRows,
+        );
 
         if (!canonicalKey) {
           console.warn(
-            "Skipping Inventory row with unresolved component:",
+            "Skipping available-stock row with unresolved component:",
             item,
           );
           return;
         }
 
-        counts[canonicalKey] =
-          Number(
-            counts[canonicalKey] || 0,
-          ) + quantity;
+        const availableQuantity = Number(
+          item.available_quantity ??
+            item.available_inventory_quantity ??
+            0,
+        );
+        counts[canonicalKey] = Number.isFinite(availableQuantity)
+          ? Math.max(availableQuantity, 0)
+          : 0;
+
+        const rawReservationDetails =
+          item.reserved_by_other_mr_details ??
+          item.reservation_details ??
+          [];
+        reservationDetails[canonicalKey] = Array.isArray(
+          rawReservationDetails,
+        )
+          ? rawReservationDetails
+              .map((reservation) => ({
+                material_request_id: String(
+                  reservation?.material_request_id || "",
+                ).trim(),
+                reserved_quantity: Math.max(
+                  Number(reservation?.reserved_quantity) || 0,
+                  0,
+                ),
+              }))
+              .filter((reservation) => reservation.reserved_quantity > 0)
+          : [];
       });
 
-      console.debug(
-        "Current central In-Store counts:",
-        counts,
-      );
-
+      console.debug("Current free In-Store counts:", counts);
       setInventoryCounts(counts);
+      setInventoryReservationDetails(reservationDetails);
       return counts;
     } catch (error) {
       console.error(
-        "Failed to load current In-Store quantities:",
+        "Failed to load available In-Store quantities:",
         error,
       );
+      // Do not show physical stock as free when reservation data failed to load.
       setInventoryCounts({});
+      setInventoryReservationDetails({});
       return {};
     }
   };
-
 
 const [componentForm, setComponentForm] = useState({
   component_id: "AC_0001",
@@ -4369,7 +4397,7 @@ async function handleSubmit(e) {
         <th className="px-4 py-3">Component Type</th>
         <th className="px-4 py-3">Qty</th>
         <th className="px-4 py-3">UOM</th>
-        <th className="px-4 py-3">Inventory Qty</th>
+        <th className="px-4 py-3">Available Qty</th>
         <th className="px-4 py-3">Action</th>
       </tr>
     </thead>
@@ -4469,7 +4497,7 @@ async function handleSubmit(e) {
 
       {/* Inventory Qty */}
       <td className="px-3 py-2 text-center">
-        {getInventoryQuantityForBomRow(row)}
+        {renderInventoryAvailability(row)}
       </td>
 
       {/* Delete */}
@@ -4538,7 +4566,7 @@ async function handleSubmit(e) {
                   <th className="px-4 py-3">Component Type</th>
                   <th className="px-4 py-3">Qty</th>
                   <th className="px-4 py-3">UOM</th>
-                  <th className="px-4 py-3">Inventory Qty</th>
+                  <th className="px-4 py-3">Available Qty</th>
                   <th className="px-4 py-3">Action</th>
                 </tr>
               </thead>
@@ -4626,7 +4654,7 @@ async function handleSubmit(e) {
                       />
                     </td>
                     <td className="px-3 py-2 text-center">
-                      {getInventoryQuantityForBomRow(row)}
+                      {renderInventoryAvailability(row)}
                     </td>
                     <td className="px-3 py-2 text-center">
                       <button
@@ -4702,7 +4730,7 @@ async function handleSubmit(e) {
             <th className="px-3 py-2">Component Type</th>
             <th className="px-3 py-2">Qty</th>
             <th className="px-3 py-2">UOM</th>
-            <th className="px-3 py-2">Inventory Qty</th>
+            <th className="px-3 py-2">Available Qty</th>
             {customizedBom && (
               <th className="min-w-[240px] px-3 py-2">
                 Remarks / Change Reason
@@ -5087,9 +5115,7 @@ async function handleSubmit(e) {
                             </td>
 
                             <td className="px-3 py-2 text-center">
-                              {getInventoryQuantityForBomRow(
-                                row,
-                              )}
+                              {renderInventoryAvailability(row)}
                             </td>
 
                             {customizedBom && (

@@ -2539,20 +2539,24 @@ const loadNotifications = async (
             );
 
           /*
-           * MaterialRequest status is the primary source.
-           * The Notification row is a fallback for older
-           * records whose status was not refreshed.
+           * A split MR can have Inventory Pending as its overall status
+           * while its shortage still has a separate Procurement task.
+           * Keep that task visible whenever the Procurement notification
+           * exists and the request still has un-ordered shortage quantity.
            */
+          const isTerminalForProcurement = [
+            "INVENTORY_ISSUED",
+            "MR_COMPLETED",
+            "MANAGER_REJECTED",
+            "REJECTED",
+          ].includes(workflowStatus);
+
           return (
-            workflowStatus ===
-              "PROCUREMENT_PENDING" ||
+            hasShortage &&
+            !isTerminalForProcurement &&
             (
-              hasProcurementNotification &&
-              ![
-                "INVENTORY_PENDING",
-                "INVENTORY_ISSUED",
-                "MR_COMPLETED",
-              ].includes(workflowStatus)
+              workflowStatus === "PROCUREMENT_PENDING" ||
+              hasProcurementNotification
             )
           );
         }
@@ -5320,8 +5324,8 @@ const status = isProcurement
         )}
 {(
   isProcurement &&
-  workflowStatus ===
-    "PROCUREMENT_PENDING" &&
+  shortageRows.length > 0 &&
+  !["INVENTORY_ISSUED", "MR_COMPLETED"].includes(workflowStatus) &&
   !(
     n.po_raised === true ||
     n.po_raised === 1 ||
