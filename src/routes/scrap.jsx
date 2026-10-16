@@ -67,6 +67,48 @@ const unwrapList = (payload) => {
   return [];
 };
 
+const getMrProject = (mr) => {
+  const project =
+    mr?.project ||
+    mr?.project_details ||
+    mr?.project_info ||
+    mr?.project_name ||
+    mr?.projectName ||
+    mr?.project_code ||
+    mr?.projectCode ||
+    "";
+
+  if (project && typeof project === "object") {
+    const id = project.id ?? project.pk ?? project.project_code ?? project.code ?? "";
+    const label =
+      project.name ||
+      project.project_name ||
+      project.project_code ||
+      project.code ||
+      (id ? String(id) : "");
+
+    return { id: String(id || label), label: String(label) };
+  }
+
+  const label = String(project || "").trim();
+  return { id: label, label };
+};
+
+const getMrOptionValue = (mr) => {
+  const instanceId =
+    mr?.drone_instance_id ??
+    mr?._drone_instance_id ??
+    mr?.droneInstanceId ??
+    mr?.drone_instance?.id;
+
+  return String(
+    mr?.option_id ??
+      (instanceId
+        ? `${mr?.id ?? mr?.material_request_id}:drone:${instanceId}`
+        : mr?.id ?? mr?.material_request_id ?? ""),
+  );
+};
+
 
 const cleanUserName = (value) => {
   const raw = String(
@@ -253,6 +295,9 @@ export default function ScrapPage() {
     mrOptions,
     setMrOptions,
   ] = useState([]);
+
+  const [selectedProject, setSelectedProject] = useState("");
+  const [mrComponentSearch, setMrComponentSearch] = useState("");
 
   const [
     loadingMrOptions,
@@ -882,6 +927,11 @@ export default function ScrapPage() {
               id,
               code,
               name,
+              componentType:
+                component?.component_type ||
+                component?.componentType ||
+                component?.type ||
+                "",
               label:
                 label ||
                 String(
@@ -913,10 +963,168 @@ export default function ScrapPage() {
 
   const selectedMr = useMemo(
     () => mrOptions.find((item) =>
-      String(item.option_id || item.id) === String(form.material_request)
+      getMrOptionValue(item) === String(form.material_request)
     ) || null,
     [mrOptions, form.material_request],
   );
+
+  const projectOptions = useMemo(() => {
+    const projects = new Map();
+    mrOptions.forEach((mr) => {
+      const project = getMrProject(mr);
+      if (project.id && project.label) {
+        projects.set(project.id, project.label);
+      }
+    });
+    return Array.from(projects, ([id, label]) => ({ id, label })).sort(
+      (left, right) => left.label.localeCompare(right.label),
+    );
+  }, [mrOptions]);
+
+  const projectMrOptions = useMemo(() => {
+    if (!selectedProject) return [];
+
+    const instanceCounts = new Map();
+    return mrOptions
+      .filter((mr) => getMrProject(mr).id === selectedProject)
+      .map((mr) => {
+        const baseId = String(
+          mr?.display_material_request_id ||
+            mr?.material_request_id ||
+            mr?.material_request_number ||
+            mr?.request_id ||
+            mr?.mr_id ||
+            mr?.id ||
+            "MR",
+        ).trim();
+        const instanceCode = String(
+          mr?.instance_code ||
+            mr?.drone_instance_code ||
+            mr?.droneInstanceCode ||
+            mr?._drone_instance_code ||
+            mr?.drone_instance?.instance_code ||
+            "",
+        ).trim();
+        const explicitSuffix =
+          mr?.instance_suffix ??
+          mr?.drone_instance_suffix ??
+          mr?.droneInstanceSuffix ??
+          mr?._drone_instance_suffix ??
+          mr?.drone_instance_sequence ??
+          mr?.suffix ??
+          mr?.sequence ??
+          mr?.instance_number ??
+          mr?.drone_instance_number ??
+          mr?.drone_instance?.suffix ??
+          mr?.drone_instance?.sequence ??
+          "";
+        const instanceId =
+          mr?.drone_instance_id ??
+          mr?._drone_instance_id ??
+          mr?.droneInstanceId ??
+          mr?.drone_instance?.id;
+
+        let instanceLabel = baseId;
+        if (instanceCode) {
+          instanceLabel = instanceCode;
+        } else if (explicitSuffix !== "") {
+          const suffixText = String(explicitSuffix).trim();
+          const suffix = /^\d+$/.test(suffixText)
+            ? `_${suffixText.padStart(2, "0")}`
+            : suffixText.startsWith("_")
+              ? suffixText
+              : `_${suffixText}`;
+          instanceLabel = `${baseId}${suffix}`;
+        } else if (instanceId) {
+          const instanceIndex = (instanceCounts.get(baseId) || 0) + 1;
+          instanceCounts.set(baseId, instanceIndex);
+          instanceLabel = `${baseId}_${String(instanceIndex).padStart(2, "0")}`;
+        }
+
+        return {
+          ...mr,
+          optionValue: getMrOptionValue(mr),
+          optionLabel: instanceLabel,
+        };
+      });
+  }, [mrOptions, selectedProject]);
+
+  const visibleMrComponents = useMemo(() => {
+    const query = mrComponentSearch.trim().toLowerCase();
+    const mrComponents = selectedMr?.components || [];
+    if (!query) return mrComponents;
+
+    return mrComponents.filter((component) => {
+      const componentMaster = componentOptions.find((option) =>
+        [
+          component?.component,
+          component?.component_id,
+          component?.componentId,
+          component?.component_code,
+          component?.componentCode,
+        ]
+          .filter((value) => value !== undefined && value !== null)
+          .some((value) =>
+            [option.id, option.code, option.name, option.label]
+              .filter((candidate) => candidate !== undefined && candidate !== null)
+              .some(
+                (candidate) =>
+                  String(candidate).toLowerCase() === String(value).toLowerCase(),
+              ),
+          ),
+      );
+      const searchable = [
+        component?.label,
+        component?.component_name,
+        component?.componentName,
+        component?.component_id,
+        component?.componentId,
+        component?.component_code,
+        component?.componentCode,
+        component?.component_type,
+        component?.componentType,
+        componentMaster?.label,
+        componentMaster?.componentType,
+        ...(Array.isArray(component?.available_serials)
+          ? component.available_serials
+          : []),
+      ];
+
+      return searchable.some((value) =>
+        String(value ?? "").toLowerCase().includes(query),
+      );
+    });
+  }, [componentOptions, mrComponentSearch, selectedMr]);
+
+  const visibleMrSerials = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          visibleMrComponents.flatMap((component) =>
+            Array.isArray(component?.available_serials)
+              ? component.available_serials.map((serial) => String(serial).trim()).filter(Boolean)
+              : [],
+          ),
+        ),
+      ),
+    [visibleMrComponents],
+  );
+
+  const allVisibleMrSerialsSelected =
+    visibleMrSerials.length > 0 &&
+    visibleMrSerials.every((serial) => form.selected_serials.includes(serial));
+
+  const toggleVisibleMrSerials = () => {
+    setForm((previous) => {
+      const selected = new Set(previous.selected_serials);
+      if (visibleMrSerials.every((serial) => selected.has(serial))) {
+        visibleMrSerials.forEach((serial) => selected.delete(serial));
+      } else {
+        visibleMrSerials.forEach((serial) => selected.add(serial));
+      }
+      return { ...previous, selected_serials: Array.from(selected) };
+    });
+  };
 
   const selectedMrAvailableSerials =
     useMemo(
@@ -1354,7 +1562,7 @@ export default function ScrapPage() {
         const stillAvailable =
           availableOptions.some(
             (mr) =>
-              String(mr?.option_id || mr?.id) ===
+              getMrOptionValue(mr) ===
               String(previous.material_request),
           );
 
@@ -3059,6 +3267,8 @@ export default function ScrapPage() {
                   <button
                     type="button"
                     onClick={() => {
+                      setSelectedProject("");
+                      setMrComponentSearch("");
                       setForm((previous) => ({
                         ...previous,
                         scrap_origin: "MR",
@@ -3077,7 +3287,10 @@ export default function ScrapPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setForm((previous) => ({
+                    onClick={() => {
+                      setSelectedProject("");
+                      setMrComponentSearch("");
+                      setForm((previous) => ({
                         ...previous,
                         scrap_origin: "OTHER",
                         material_request: "",
@@ -3085,7 +3298,8 @@ export default function ScrapPage() {
                         selected_serials: [],
                         quantity: 1,
                         scrap_mode: "PARTIAL",
-                      }))}
+                      }));
+                    }}
                     className={`rounded-xl border px-3 py-2 text-left text-sm transition ${form.scrap_origin === "OTHER" ? "border-primary bg-primary/10 text-primary" : "border-border hover:bg-muted"}`}
                   >
                     <div className="font-semibold">Other Component</div>
@@ -3097,42 +3311,84 @@ export default function ScrapPage() {
               {form.scrap_origin === "MR" ? (
                 <>
                   <div>
-                    <label className="mb-1 block text-sm font-medium">Material Request ID</label>
+                    <label className="mb-1 block text-sm font-medium">Project</label>
                     <select
-                      value={form.material_request}
-                      onChange={(event) =>
+                      value={selectedProject}
+                      onChange={(event) => {
+                        setSelectedProject(event.target.value);
+                        setMrComponentSearch("");
                         setForm((previous) => ({
                           ...previous,
-                          material_request:
-                            event.target.value,
+                          material_request: "",
+                          selected_serials: [],
+                          quantity: 1,
+                          scrap_mode: "PARTIAL",
+                        }));
+                      }}
+                      disabled={loadingMrOptions || projectOptions.length === 0}
+                      className="w-full rounded-xl border border-border bg-background px-3 py-2 disabled:opacity-60"
+                    >
+                      <option value="">
+                        {loadingMrOptions
+                          ? "Loading projects..."
+                          : projectOptions.length
+                            ? "Select Project"
+                            : "No projects available"}
+                      </option>
+                      {projectOptions.map((project) => (
+                        <option key={project.id} value={project.id}>
+                          {project.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-sm font-medium">
+                      Material Request ID
+                    </label>
+                    <select
+                      value={form.material_request}
+                      onChange={(event) => {
+                        setMrComponentSearch("");
+                        setForm((previous) => ({
+                          ...previous,
+                          material_request: event.target.value,
                           component: "",
                           selected_serials: [],
                           quantity: 1,
                           scrap_mode: "PARTIAL",
-                        }))
-                      }
-                      disabled={loadingMrOptions}
+                        }));
+                      }}
+                      disabled={loadingMrOptions || !selectedProject}
                       className="w-full rounded-xl border border-border bg-background px-3 py-2 disabled:opacity-60"
                       required
                     >
-                      <option value="">{loadingMrOptions ? "Loading issued Material Requests..." : "Select Material Request"}</option>
-                      {mrOptions.map((mr) => (
+                      <option value="">
+                        {!selectedProject
+                          ? "Select Project first"
+                          : loadingMrOptions
+                            ? "Loading issued Material Requests..."
+                            : "Select Material Request"}
+                      </option>
+                      {projectMrOptions.map((mr) => (
                         <option
-                          key={mr.option_id || `${mr.id}:${mr.drone_instance_id || "legacy"}`}
-                          value={mr.option_id || mr.id}
+                          key={mr.optionValue}
+                          value={mr.optionValue}
                         >
-                          {[
-                            mr.display_material_request_id || mr.material_request_id,
-                            mr.project,
-                          ].filter(Boolean).join(" - ")}
+                          {mr.optionLabel}
                         </option>
                       ))}
                     </select>
                     {!loadingMrOptions && mrOptions.length === 0 ? (
                       <p className="mt-2 text-xs text-amber-600">No idle / available In-Drone Material Request is currently eligible for Scrap.</p>
-                    ) : (
+                    ) : selectedProject && projectMrOptions.length === 0 ? (
+                      <p className="mt-2 text-xs text-amber-600">
+                        No eligible Material Requests are available for this project.
+                      </p>
+                    ) : selectedProject ? (
                       <p className="mt-2 text-xs text-muted-foreground">Only AVAILABLE physical In-Drone instances are shown. A busy/sold/scrapped _01 does not hide an available _02 from the same MR.</p>
-                    )}
+                    ) : null}
                   </div>
 
                   {selectedMr ? (
@@ -3213,8 +3469,33 @@ export default function ScrapPage() {
                           </span>
                         </div>
 
+                        <label className="mb-3 block">
+                          <span className="sr-only">Search components and serial numbers</span>
+                          <input
+                            type="search"
+                            value={mrComponentSearch}
+                            onChange={(event) => setMrComponentSearch(event.target.value)}
+                            placeholder="Search component, type, or serial number..."
+                            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/10"
+                          />
+                        </label>
+
                         <div className="max-h-56 space-y-3 overflow-y-auto rounded-xl border border-border bg-background p-3">
-                          {(selectedMr.components || []).map(
+                          {visibleMrSerials.length > 0 && (
+                            <label className="flex items-center gap-2 border-b border-border pb-3 text-sm font-medium">
+                              <input
+                                type="checkbox"
+                                checked={
+                                  form.scrap_mode === "TOTAL" || allVisibleMrSerialsSelected
+                                }
+                                disabled={form.scrap_mode === "TOTAL"}
+                                onChange={toggleVisibleMrSerials}
+                                className="size-4 accent-rose-500"
+                              />
+                              Select all visible serial numbers
+                            </label>
+                          )}
+                          {visibleMrComponents.map(
                             (component) => {
                               const available =
                                 Array.isArray(
@@ -3222,6 +3503,31 @@ export default function ScrapPage() {
                                 )
                                   ? component.available_serials
                                   : [];
+                              const componentMaster = componentOptions.find((option) =>
+                                [
+                                  component?.component,
+                                  component?.component_id,
+                                  component?.componentId,
+                                  component?.component_code,
+                                  component?.componentCode,
+                                ]
+                                  .filter((value) => value !== undefined && value !== null)
+                                  .some((value) =>
+                                    [option.id, option.code, option.name, option.label]
+                                      .filter((candidate) => candidate !== undefined && candidate !== null)
+                                      .some(
+                                        (candidate) =>
+                                          String(candidate).toLowerCase() ===
+                                          String(value).toLowerCase(),
+                                      ),
+                                  ),
+                              );
+                              const componentType =
+                                component.component_type ||
+                                component.componentType ||
+                                component.type ||
+                                componentMaster?.componentType ||
+                                "—";
 
                               return (
                                 <div
@@ -3231,8 +3537,13 @@ export default function ScrapPage() {
                                   className="rounded-xl border border-border p-3"
                                 >
                                   <div className="mb-2 flex items-center justify-between gap-2">
-                                    <div className="text-sm font-semibold">
-                                      {component.label}
+                                    <div>
+                                      <div className="text-sm font-semibold">
+                                        {component.label || componentMaster?.label || "Component"}
+                                      </div>
+                                      <div className="mt-0.5 text-xs text-muted-foreground">
+                                        Component Type: {componentType}
+                                      </div>
                                     </div>
 
                                     <span className="text-xs text-muted-foreground">
@@ -3288,11 +3599,18 @@ export default function ScrapPage() {
                                               />
 
                                               <span className="font-medium">
-                                                {serial}
+                                                Serial No: {serial}
                                               </span>
                                             </label>
                                           );
                                         },
+                                      )}
+                                      {visibleMrComponents.length === 0 && (
+                                        <div className="py-5 text-center text-sm text-muted-foreground">
+                                          {mrComponentSearch
+                                            ? "No components or serial numbers match your search."
+                                            : "No issued components are available for this Material Request."}
+                                        </div>
                                       )}
                                     </div>
                                   )}

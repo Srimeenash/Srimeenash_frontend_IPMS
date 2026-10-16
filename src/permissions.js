@@ -57,6 +57,8 @@ const WORK_MODULES = {
     "material-request",
     "projects",
     "scrap",
+    "inventory",
+
   ],
   procurement: [
     "purchase-order",

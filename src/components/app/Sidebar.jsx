@@ -134,6 +134,7 @@ export function Sidebar() {
             "procurement",
             "finance",
             "inventory",
+            "engineer",
             "management",
           ],
         },

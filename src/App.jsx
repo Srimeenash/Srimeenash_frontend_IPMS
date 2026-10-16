@@ -17,6 +17,7 @@ import LoginPage from "./routes/login";
 
 import ProcurementPage from "./routes/procurement";
 import InventoryPage from "./routes/inventory";
+import EngineerInventoryPage from "./routes/EngineerInventoryPage";
 import EngineerPage from "./routes/engineer";
 import FinancePage from "./routes/finance";
 
@@ -85,6 +86,7 @@ const INVENTORY_ROLES = [
   "procurement",
   "finance",
   "inventory",
+  "engineer",
 ];
 
 
@@ -268,6 +270,21 @@ function Guard({
 }
 
 
+
+function InventoryRolePage() {
+  const { user, activeRole } = useAuth();
+  const role = String(
+    activeRole ||
+      user?.active_role ||
+      user?.activeRole ||
+      user?.role?.name ||
+      user?.role ||
+      "",
+  ).trim().toLowerCase();
+
+  return role === "engineer" ? <EngineerInventoryPage /> : <InventoryPage />;
+}
+
 export default function App() {
   return (
     <AuthProvider>
@@ -368,7 +385,7 @@ export default function App() {
                       INVENTORY_VIEW_ROLES
                     }
                   >
-                    <InventoryPage />
+                    <InventoryRolePage />
                   </Guard>
                 }
               />
