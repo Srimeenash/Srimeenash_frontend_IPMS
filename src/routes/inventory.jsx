@@ -450,7 +450,17 @@ const isAllowedInDroneRequest = (request = {}) => {
     .trim()
     .toUpperCase();
 
-  if (["BOM", "R&D", "RD", "RETAIL_SALES"].includes(requestType)) {
+  if (
+    [
+      "BOM",
+      "CUSTOM_BOM",
+      "CUSTOMIZED_BOM",
+      "CUSTOMISED_BOM",
+      "R&D",
+      "RD",
+      "RETAIL_SALES",
+    ].includes(requestType)
+  ) {
     return true;
   }
 
@@ -715,6 +725,7 @@ export default function InventoryPage() {
   const [qcInventory, setQcInventory] = useState([]);
   const [scrapEntries, setScrapEntries] = useState(() => getStoredScrapEntries());
   const [approvedRequests, setApprovedRequests] = useState([]);
+  const [inDroneTypeFilter, setInDroneTypeFilter] = useState("All");
 
   // Professional audit queue for drones/components returned by Engineer.
   // Source of truth is ComponentUsage.received_date + return QC fields.
@@ -3268,12 +3279,13 @@ export default function InventoryPage() {
     }
 
     if (
-      requestType === "BOM" ||
+      ["BOM", "CUSTOM_BOM", "CUSTOMIZED_BOM", "CUSTOMISED_BOM"].includes(requestType) ||
       request?.bom ||
       request?.bom_number ||
       request?.bom_code
     ) {
-      return request?.customized_bom === true ||
+      return ["CUSTOM_BOM", "CUSTOMIZED_BOM", "CUSTOMISED_BOM"].includes(requestType) ||
+        request?.customized_bom === true ||
         String(request?.customized_bom || "").toLowerCase() === "true"
         ? "Customized BOM"
         : "BOM";
@@ -3281,6 +3293,49 @@ export default function InventoryPage() {
 
     return "-";
   };
+
+  const inDroneTypes = [
+    "BOM",
+    "Customized BOM",
+    "R&D",
+    "Returnable",
+    "Retail Sales",
+    "From Scrap",
+  ];
+
+  const isInDroneReturnable = (request) =>
+    Array.isArray(request?.inDroneReturnableHistory) &&
+    request.inDroneReturnableHistory.length > 0;
+
+  const getInDroneTypeLabels = (request) => {
+    const labels = [];
+    const requestType = getRequestTypeLabel(request);
+
+    if (requestType !== "-") labels.push(requestType);
+    if (isInDroneReturnable(request)) labels.push("Returnable");
+
+    return labels;
+  };
+
+  const inDroneTypeCounts = { All: approvedRequests.length };
+  inDroneTypes.forEach((type) => {
+    inDroneTypeCounts[type] = 0;
+  });
+
+  approvedRequests.forEach((request) => {
+    getInDroneTypeLabels(request).forEach((type) => {
+      if (Object.prototype.hasOwnProperty.call(inDroneTypeCounts, type)) {
+        inDroneTypeCounts[type] += 1;
+      }
+    });
+  });
+
+  const filteredInDroneRequests =
+    inDroneTypeFilter === "All"
+      ? approvedRequests
+      : approvedRequests.filter((request) =>
+          getInDroneTypeLabels(request).includes(inDroneTypeFilter),
+        );
 
   const openInDroneRequestDetails = (request) => {
     setBomDetails(null);
@@ -18975,6 +19030,28 @@ const getRowsForCurrentTab = () => {
             </p>
           </div>
 
+          <div
+            className="flex flex-wrap gap-2"
+            role="group"
+            aria-label="Filter In-Drone requests by type"
+          >
+            {["All", ...inDroneTypes].map((type) => (
+              <button
+                key={type}
+                type="button"
+                aria-pressed={inDroneTypeFilter === type}
+                onClick={() => setInDroneTypeFilter(type)}
+                className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                  inDroneTypeFilter === type
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-border bg-card text-muted-foreground hover:border-primary hover:text-primary"
+                }`}
+              >
+                {type} ({inDroneTypeCounts[type] || 0})
+              </button>
+            ))}
+          </div>
+
           {salesActionError && (
             <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
               {salesActionError}
@@ -19095,6 +19172,34 @@ const getRowsForCurrentTab = () => {
                     getRequestComponentDisplay(
                       row,
                     ),
+                },
+                {
+                  key: "request_type",
+                  header: "Request Type",
+                  className: "text-center",
+                  render: (row) => (
+                    <div className="flex flex-wrap items-center justify-center gap-1.5">
+                      {getInDroneTypeLabels(row).map((type) => (
+                        <span
+                          key={type}
+                          className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold ${
+                            type === "Retail Sales"
+                              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                              : type === "Returnable"
+                                ? "border-blue-200 bg-blue-50 text-blue-700"
+                                : type === "From Scrap"
+                                  ? "border-rose-200 bg-rose-50 text-rose-700"
+                                  : "border-violet-200 bg-violet-50 text-violet-700"
+                          }`}
+                        >
+                          {type}
+                        </span>
+                      ))}
+                      {getInDroneTypeLabels(row).length === 0 && "—"}
+                    </div>
+                  ),
+                  filterValue: (row) => getInDroneTypeLabels(row).join(", "),
+                  sortValue: (row) => getInDroneTypeLabels(row).join(", "),
                 },
                 {
                   key: "drone_quantity",
@@ -19337,7 +19442,7 @@ const getRowsForCurrentTab = () => {
                   },
                 },
               ]}
-               rows={approvedRequests}
+               rows={filteredInDroneRequests}
   loading={initialPageLoading || loadingRequests}
   loadingTitle="Loading In Drone Inventory..."
   loadingDescription="Fetching approved material requests, allocation and drone workflow details."

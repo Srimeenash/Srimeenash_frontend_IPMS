@@ -109,6 +109,13 @@ const getMrOptionValue = (mr) => {
   );
 };
 
+const getMrDroneInstanceId = (mr) =>
+  mr?.drone_instance_id ??
+  mr?._drone_instance_id ??
+  mr?.droneInstanceId ??
+  mr?.drone_instance?.id ??
+  null;
+
 
 const cleanUserName = (value) => {
   const raw = String(
@@ -989,11 +996,11 @@ export default function ScrapPage() {
       .filter((mr) => getMrProject(mr).id === selectedProject)
       .map((mr) => {
         const baseId = String(
-          mr?.display_material_request_id ||
-            mr?.material_request_id ||
+          mr?.material_request_id ||
             mr?.material_request_number ||
             mr?.request_id ||
             mr?.mr_id ||
+            mr?.display_material_request_id ||
             mr?.id ||
             "MR",
         ).trim();
@@ -1272,50 +1279,10 @@ export default function ScrapPage() {
     try {
       setLoadingMrOptions(true);
 
-      /*
-       * Add Scrap must use the SAME availability boundary as the In-Drone
-       * Action column.
-       *
-       * An MR is selectable only while the drone is idle/free:
-       *   - no active/pending Sales
-       *   - no active Flight Test
-       *   - no active Customer Demo / Trials
-       *   - no active Event
-       *
-       * Returned Flight/Demo/Event becomes eligible again only after:
-       *   Return QC = OK
-       *   AND return_approval_status = COMPLETED
-       *
-       * The backend applies the same rule authoritatively. This frontend
-       * overlay keeps the popup correct immediately even if an older backend
-       * response is briefly cached.
-       */
-      const [
-        optionsPayload,
-        componentUsagePayload,
-        outwardPayload,
-      ] = await Promise.all([
-        fetchAuthenticatedJson(
-          `${config.baseURL}/outward/engineer-scrap-options/`,
-          {
-            cache: "no-store",
-          },
-        ),
-
-        fetchAuthenticatedJson(
-          `${config.baseURL}/component-usage/?page_size=5000`,
-          {
-            cache: "no-store",
-          },
-        ).catch(() => []),
-
-        fetchAuthenticatedJson(
-          `${config.baseURL}/outward/?page_size=5000`,
-          {
-            cache: "no-store",
-          },
-        ).catch(() => []),
-      ]);
+      const optionsPayload = await fetchAuthenticatedJson(
+        `${config.baseURL}/outward/engineer-scrap-options/`,
+        { cache: "no-store" },
+      );
 
       const rawOptions =
         Array.isArray(
@@ -1324,224 +1291,25 @@ export default function ScrapPage() {
           ? optionsPayload.material_requests
           : [];
 
-      const usageRows =
-        unwrapList(componentUsagePayload);
-
-      const outwardRows =
-        unwrapList(outwardPayload);
-
-      const normalizeReference = (
-        value,
-      ) =>
+      const normalizeReference = (value) =>
         String(value ?? "")
           .trim()
           .toUpperCase();
 
-      const getMrReferences = (
-        mr = {},
-      ) =>
-        new Set(
-          [
-            mr?.id,
-            mr?.pk,
-            mr?.material_request_id,
-            mr?.request_id,
-            mr?.mr_id,
-          ]
-            .map(normalizeReference)
-            .filter(Boolean),
-        );
-
-      const rowMatchesMr = (
-        row = {},
-        references,
-      ) => {
-        const rowReferences = [
-          row?.material_request,
-          row?.material_request_id,
-          row?.material_request_number,
-          row?.materialRequest,
-          row?.materialRequestId,
-          row?.materialRequestNumber,
-          row?.request_id,
-          row?.mr_id,
-        ]
-          .map((value) => {
-            if (
-              value &&
-              typeof value === "object"
-            ) {
-              return [
-                value?.id,
-                value?.pk,
-                value?.material_request_id,
-                value?.request_id,
-                value?.mr_id,
-              ];
-            }
-
-            return [value];
-          })
-          .flat()
-          .map(normalizeReference)
-          .filter(Boolean);
-
-        return rowReferences.some(
-          (reference) =>
-            references.has(reference),
-        );
-      };
-
-      const rejectedStates =
-        new Set([
-          "REJECTED",
-          "MANAGER_REJECTED",
-          "FINANCE_REJECTED",
-          "CANCELLED",
-          "CANCELED",
-        ]);
-
-      const hasActiveSales = (
-        references,
-      ) =>
-        outwardRows.some((row) => {
-          if (
-            normalizeReference(
-              row?.outward_type ||
-                row?.type_of_outward ||
-                row?.type,
-            ) !== "SALES"
-          ) {
-            return false;
-          }
-
-          if (
-            !rowMatchesMr(
-              row,
-              references,
-            )
-          ) {
-            return false;
-          }
-
-          const approvalStatus =
-            normalizeReference(
-              row?.approval_status ||
-                row?.approvalStatus,
-            );
-
-          const rowStatus =
-            normalizeReference(
-              row?.status,
-            );
-
-          return (
-            !rejectedStates.has(
-              approvalStatus,
-            ) &&
-            !rejectedStates.has(
-              rowStatus,
-            )
-          );
-        });
-
-      const activeUsagePurposes =
-        new Set([
-          "FLIGHT_TEST",
-          "CUSTOMER_DEMO",
-          "EVENT",
-        ]);
-
-      const hasActiveTemporaryUsage = (
-        references,
-      ) =>
-        usageRows.some((usage) => {
-          if (
-            !rowMatchesMr(
-              usage,
-              references,
-            )
-          ) {
-            return false;
-          }
-
-          const purpose =
-            normalizeReference(
-              usage?.purpose ||
-                usage?.usage_purpose,
-            );
-
-          if (
-            !activeUsagePurposes.has(
-              purpose,
-            )
-          ) {
-            return false;
-          }
-
-          const approval =
-            normalizeReference(
-              usage?.return_approval_status ||
-                usage?.returnApprovalStatus,
-            );
-
-          if (
-            rejectedStates.has(
-              approval,
-            )
-          ) {
-            return false;
-          }
-
-          const condition =
-            normalizeReference(
-              usage?.return_condition ||
-                usage?.returnCondition,
-            );
-
-          /*
-           * Only a successful completed return makes the drone available
-           * again. Until that point Flight/Demo/Event owns the MR.
-           */
-          const fullyReleased =
-            condition === "OK" &&
-            approval === "COMPLETED";
-
-          return !fullyReleased;
-        });
-
       const availableOptions =
         rawOptions.filter((mr) => {
-          /*
-           * New backend options are already physical DroneInstance rows and
-           * only AVAILABLE _01/_02 instances are returned. Do not apply the
-           * old MR-wide Sales/Returnable filter, because a busy _01 must not
-           * hide a free _02 sibling.
-           */
-          if (mr?.drone_instance_id) {
-            return true;
-          }
+          const instanceId = getMrDroneInstanceId(mr);
+          if (instanceId === null || instanceId === "") return false;
 
-          const references =
-            getMrReferences(mr);
+          const status = normalizeReference(
+            mr?.drone_instance_status ||
+              mr?.droneInstanceStatus ||
+              mr?.drone_instance?.status ||
+              mr?.status ||
+              "",
+          );
 
-          if (
-            hasActiveSales(
-              references,
-            )
-          ) {
-            return false;
-          }
-
-          if (
-            hasActiveTemporaryUsage(
-              references,
-            )
-          ) {
-            return false;
-          }
-
-          return true;
+          return !status || status === "AVAILABLE";
         });
 
       setMrOptions(
