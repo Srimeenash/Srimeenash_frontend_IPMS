@@ -10,6 +10,7 @@ import { useAuth } from "@/AuthContext";
 import { canWork } from "@/permissions";
 import { Boxes, Plane, Trash2, Search, Plus, X, ShoppingCart, CalendarDays, Eye, RotateCcw, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
+import Select from "react-select";
 import CreatableSelect from "react-select/creatable";
 
 const INVENTORY_PAGE_SIZE = 50;
@@ -1207,8 +1208,6 @@ export default function InventoryPage() {
     }
   };
 
-
-  const openSerialsModal = (row) => openCostDetails("inventory", row);
 
   const buildInventorySpecificationDetail = (item = {}) => {
     const componentMaster =
@@ -8615,7 +8614,8 @@ const getSourceMrNumber = (
 async function loadInventoryData(
   vendorList = [],
   componentList = [],
-  poList = []
+  poList = [],
+  options = {},
 ) {
     try {
       /*
@@ -8709,7 +8709,9 @@ async function loadInventoryData(
       try {
         inventoryList =
           await fetchSharedPaginatedList(
-            "inventory",
+            options.forceInventoryRefresh
+              ? `inventory-refresh-${Date.now()}`
+              : "inventory",
             `${config.baseURL}/inventory/inventory/?page_size=500`,
             {
               cache: "no-store",
@@ -16042,17 +16044,29 @@ const generateInventoryCode = async () => {
         String(newInventory.component),
     );
 
+  const vendor = String(newInventory.vendor || "").trim();
+  const missingFields = [];
+
+  if (!String(newInventory.specifications || "").trim()) {
+    missingFields.push("Specification");
+  }
   if (!selectedComponent) {
-    alert("Please select a Component.");
+    missingFields.push("Component ID / Name");
+  }
+  if (!vendor) {
+    missingFields.push("Vendor");
+  }
+
+  if (missingFields.length > 0) {
+    window.alert(
+      `Please complete the required field(s):\n\n${missingFields
+        .map((field) => `• ${field}`)
+        .join("\n")}`,
+    );
     return;
   }
 
-  /*
-   * Only Component is mandatory.
-   *
-   * If Qty is left empty, save one unit by default.
-   * All other Add Stock fields are optional.
-   */
+  /* If Qty is left empty, save one unit by default. */
   const qty = Math.max(
     1,
     Number(newInventory.qty) || 1,
@@ -16093,7 +16107,7 @@ const generateInventoryCode = async () => {
      */
     uom: newInventory.uom || "",
 
-    vendor: newInventory.vendor || "",
+    vendor,
     purchase_order:
       newInventory.po || "",
     quantity: qty,
@@ -16178,7 +16192,7 @@ const generateInventoryCode = async () => {
     inventorySubmitLockRef.current = false;
     setSavingInventory(false);
 
-    loadInventoryData().catch(
+    loadInventoryData([], [], [], { forceInventoryRefresh: true }).catch(
       (refreshError) => {
         console.warn(
           "Stock was saved, but the Inventory screen refresh failed:",
@@ -18162,13 +18176,9 @@ const getRowsForCurrentTab = () => {
                     header: "Qty",
                     sortValue: (row) => getInventoryRecordedQuantity(row),
                     render: (row) => (
-                      <button
-                        type="button"
-                        onClick={() => openSerialsModal(row)}
-                        className="inline-flex items-center justify-center rounded-full border border-border bg-card px-3 py-1 text-sm font-semibold text-foreground transition hover:border-primary hover:text-primary"
-                      >
+                      <span className="text-sm font-semibold text-foreground">
                         {getInventoryRecordedQuantity(row)}
-                      </button>
+                      </span>
                     ),
                   },
                   {
@@ -20864,7 +20874,7 @@ const getRowsForCurrentTab = () => {
                             Stock Information
                           </h3>
                           <p className="text-[11px] text-muted-foreground">
-                            Only Component is required. All other stock and costing fields are optional.
+                            Specification, Component, and Vendor are required to add stock.
                           </p>
                         </div>
 
@@ -20881,6 +20891,8 @@ const getRowsForCurrentTab = () => {
 
                           <CreatableSelect
                             styles={selectStyles}
+                            isClearable
+                            isSearchable
                             placeholder="Select Specification..."
                             options={Array.from(
                               new Set(
@@ -20935,8 +20947,10 @@ const getRowsForCurrentTab = () => {
                             Component ID / Name <span className="text-rose-500">*</span>
                           </label>
 
-                          <CreatableSelect
+                          <Select
                             styles={selectStyles}
+                            isClearable
+                            isSearchable
                             placeholder={
                               newInventory.specifications
                                 ? "Select Component ID / Name..."
@@ -20987,6 +21001,19 @@ const getRowsForCurrentTab = () => {
                                 ) || null
                             }
                             onChange={(option) => {
+                              if (!option) {
+                                setNewInventory((previous) => ({
+                                  ...previous,
+                                  component: "",
+                                  componentCode: "",
+                                  componentName: "",
+                                  category: "",
+                                  componentType: "",
+                                  uom: "",
+                                }));
+                                return;
+                              }
+
                               const component =
                                 components.find(
                                   (item) =>
@@ -21035,11 +21062,6 @@ const getRowsForCurrentTab = () => {
                                 }),
                               );
                             }}
-                            onCreateOption={() => {
-                              alert(
-                                "Please create new components from Component Generation.",
-                              );
-                            }}
                           />
                         </div>
 
@@ -21048,40 +21070,35 @@ const getRowsForCurrentTab = () => {
                             Category
                           </label>
 
-                          <select
-                            value={newInventory.category}
-                            onChange={(event) =>
+                          <Select
+                            inputId="inventory-category-search"
+                            aria-label="Category"
+                            isClearable
+                            isSearchable
+                            styles={selectStyles}
+                            placeholder="Search or select category..."
+                            options={CATEGORIES
+                              .filter((category) => category !== "All")
+                              .map((category) => ({
+                                value: category,
+                                label: category,
+                              }))}
+                            value={CATEGORIES
+                              .filter((category) => category !== "All")
+                              .map((category) => ({
+                                value: category,
+                                label: category,
+                              }))
+                              .find((option) => option.value === newInventory.category) || null}
+                            onChange={(option) =>
                               setNewInventory(
                                 (previous) => ({
                                   ...previous,
-                                  category:
-                                    event.target.value,
+                                  category: option?.value || "",
                                 }),
                               )
                             }
-                            className={`${compactInputClass} cursor-pointer`}
-                            
-                          >
-                            <option value="">
-                              Select Category...
-                            </option>
-
-                            {CATEGORIES
-                              .filter(
-                                (category) =>
-                                  category !== "All",
-                              )
-                              .map(
-                                (category) => (
-                                  <option
-                                    key={category}
-                                    value={category}
-                                  >
-                                    {category}
-                                  </option>
-                                ),
-                              )}
-                          </select>
+                          />
                         </div>
 
                         <div>
@@ -21109,65 +21126,63 @@ const getRowsForCurrentTab = () => {
                         </div>
 
                         <div>
-                          <label className="mb-1.5 block text-xs font-semibold text-foreground">
-                            Vendor
+                          <label
+                            htmlFor="inventory-vendor-search"
+                            className="mb-1.5 block text-xs font-semibold text-foreground"
+                          >
+                            Vendor <span className="text-rose-500">*</span>
                           </label>
-                          <CreatableSelect
+                          <Select
+                            inputId="inventory-vendor-search"
+                            aria-required="true"
+                            isClearable
+                            isSearchable
                             styles={selectStyles}
-                            placeholder="Select Vendor..."
-                            options={vendors.map(
-                              (vendor) => ({
-                                value:
-                                  vendor.name ||
-                                  vendor.vendor_name,
-                                label:
-                                  vendor.name ||
-                                  vendor.vendor_name,
-                              }),
-                            )}
-                            value={
-                              vendors
-                                .map(
-                                  (vendor) => ({
-                                    value:
-                                      vendor.name ||
-                                      vendor.vendor_name,
-                                    label:
-                                      vendor.name ||
-                                      vendor.vendor_name,
-                                  }),
-                                )
-                                .find(
-                                  (option) =>
-                                    option.value ===
-                                    newInventory.vendor,
-                                ) || null
-                            }
+                            placeholder="Type to search existing vendors..."
+                            options={vendors
+                              .map((vendor) => {
+                                const vendorName = String(
+                                  vendor?.name || vendor?.vendor_name || "",
+                                ).trim();
+                                return vendorName
+                                  ? { value: vendorName, label: vendorName }
+                                  : null;
+                              })
+                              .filter(Boolean)}
+                            value={vendors
+                              .map((vendor) => {
+                                const vendorName = String(
+                                  vendor?.name || vendor?.vendor_name || "",
+                                ).trim();
+                                return vendorName
+                                  ? { value: vendorName, label: vendorName }
+                                  : null;
+                              })
+                              .filter(Boolean)
+                              .find((option) => option.value === newInventory.vendor) || null}
                             onChange={(option) =>
-                              setNewInventory(
-                                (previous) => ({
-                                  ...previous,
-                                  vendor:
-                                    option?.value ||
-                                    "",
-                                }),
-                              )
+                              setNewInventory((previous) => ({
+                                ...previous,
+                                vendor: option?.value || "",
+                              }))
                             }
-                            onCreateOption={() => {
-                              alert(
-                                "Please create new vendors from the Vendors page.",
-                              );
-                            }}
                           />
+                          <p className="mt-1 text-[11px] text-muted-foreground">
+                            {vendors.length
+                              ? "Choose a vendor from the existing Vendors list."
+                              : "No vendors are loaded. Add a vendor from the Vendors page, then try again."}
+                          </p>
                         </div>
 
                         <div>
                           <label className="mb-1.5 block text-xs font-semibold text-foreground">
                             PO
                           </label>
-                          <CreatableSelect
+                          <Select
                             styles={selectStyles}
-                            placeholder="Select Purchase Order..."
+                            isClearable
+                            isSearchable
+                            placeholder="Type to search purchase orders..."
                             options={purchaseOrders.map(
                               (po) => ({
                                 value:
@@ -21204,11 +21219,6 @@ const getRowsForCurrentTab = () => {
                                 }),
                               )
                             }
-                            onCreateOption={() => {
-                              alert(
-                                "Please create Purchase Orders from the Procurement page.",
-                              );
-                            }}
                           />
                         </div>
 
