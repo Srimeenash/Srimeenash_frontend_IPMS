@@ -792,6 +792,19 @@ async function loadRequestedPOs() {
     setSelectionMode(false);
   };
 const PO_ACTION_PRESENTATION = {
+  
+MANAGER_REJECTED: {
+  label: "Manager Rejected",
+  actionClass:
+    "border-rose-600 bg-rose-600 text-white",
+},
+
+REJECTED: {
+  label: "Rejected",
+  actionClass:
+    "border-rose-600 bg-rose-600 text-white",
+},
+
   REPLACEMENT_PENDING_MANAGER: {
     label: "Pending Procurement Approval",
     actionClass:
@@ -4628,19 +4641,24 @@ _jsx(Link, {
 
     let visibleActionStatus = "PENDING_FINANCE";
 
+
     if (
-      normalizedStatus === "REJECTED" ||
+      normalizedStatus === "MANAGER_REJECTED" ||
+      normalizedApprovalStatus === "MANAGER_REJECTED"
+    ) {
+      visibleActionStatus = "MANAGER_REJECTED";
+    }
+    else if (
       normalizedStatus === "FINANCE_REJECTED" ||
-      normalizedApprovalStatus === "REJECTED" ||
       normalizedApprovalStatus === "FINANCE_REJECTED"
     ) {
       visibleActionStatus = "FINANCE_REJECTED";
     }
-
     else if (
-      normalizedStatus === "DELIVERED"
+      normalizedStatus === "REJECTED" ||
+      normalizedApprovalStatus === "REJECTED"
     ) {
-      visibleActionStatus = "DELIVERED";
+      visibleActionStatus = "REJECTED";
     }
 
     else if (
