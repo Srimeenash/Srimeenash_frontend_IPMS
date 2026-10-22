@@ -14,30 +14,6 @@ import CreatableSelect from "react-select/creatable";
 
 const INVENTORY_PAGE_SIZE = 50;
 
-function formatInventoryScrapRemarks(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return "-";
-
-  const header = raw.match(/(?:NOT OK\s+)?(?:QC\s+)?Remarks:\s*/i);
-  const details = header
-    ? raw.slice(header.index + header[0].length).trim()
-    : raw;
-
-  const entries = details
-    .split(/\s*\|\s*|\r?\n/)
-    .map((entry) => {
-      const match = entry.match(/^(.*?)\s*\[([^\]]+)\]\s*:\s*([\s\S]*)$/);
-      if (!match) return entry.trim();
-
-      const serialNumber = match[2].trim();
-      const remark = match[3].trim() || "No note provided";
-      return `${serialNumber} · ${remark}`;
-    })
-    .filter(Boolean);
-
-  return entries.join(" | ") || raw;
-}
-
 // These styles apply only to the In Drone list and its MR details dialog.
 const IN_DRONE_TABLE_CSS = `
 .in-drone-table{width:100%;max-width:100%;min-width:0;}
@@ -434,10 +410,6 @@ const isFromScrapRequest = (request = {}) => {
     .trim()
     .toUpperCase();
 
-  // A Returnable QC reorder can use an _FR/_PR suffix but is never a
-  // From-Scrap build and must never be listed in In Drone.
-  if (["RETURNABLE", "RETAIL_SALES"].includes(requestType)) return false;
-
   const requestNumber = String(
     request?.material_request_id ||
       request?.request_id ||
@@ -753,6 +725,9 @@ export default function InventoryPage() {
   const [qcInventory, setQcInventory] = useState([]);
   const [scrapEntries, setScrapEntries] = useState(() => getStoredScrapEntries());
   const [approvedRequests, setApprovedRequests] = useState([]);
+  const [assemblyComponentUnits, setAssemblyComponentUnits] = useState([]);
+  const [assemblyComponentUnitsError, setAssemblyComponentUnitsError] =
+    useState("");
   const [inDroneTypeFilter, setInDroneTypeFilter] = useState("All");
 
   // Professional audit queue for drones/components returned by Engineer.
@@ -1701,7 +1676,7 @@ export default function InventoryPage() {
       inwardPayload,
     ] = await Promise.all([
       fetchAuthenticatedJson(
-        `${config.baseURL}/outward/?page_size=5000&summary=1`,
+        `${config.baseURL}/outward/?page_size=5000`,
         {
           cache: "no-store",
         },
@@ -3326,13 +3301,23 @@ export default function InventoryPage() {
     "BOM",
     "Customized BOM",
     "R&D",
+    "Returnable",
     "Retail Sales",
     "From Scrap",
   ];
 
+  const isInDroneReturnable = (request) =>
+    Array.isArray(request?.inDroneReturnableHistory) &&
+    request.inDroneReturnableHistory.length > 0;
+
   const getInDroneTypeLabels = (request) => {
+    const labels = [];
     const requestType = getRequestTypeLabel(request);
-    return requestType === "-" ? [] : [requestType];
+
+    if (requestType !== "-") labels.push(requestType);
+    if (isInDroneReturnable(request)) labels.push("Returnable");
+
+    return labels;
   };
 
   const inDroneTypeCounts = { All: approvedRequests.length };
@@ -3964,113 +3949,90 @@ export default function InventoryPage() {
 
   /*
    * In Drone serial display:
-   * show the component type beside every issued serial, without exposing
-   * the internal component code.
+   * show the component name beside every issued serial so the user can
+   * immediately identify which component each serial belongs to.
    *
    * Example:
-   * C_00001S00001 - Battery
+   * C_00011S00001 - Wings
    */
   const getRequestSerialDisplayBySource = (
     request,
     source,
   ) => {
-    const rows = getRequestProjectRows(request);
+    const rows =
+      getRequestProjectRows(request);
+
     const displayRows = [];
 
     rows.forEach((row) => {
-      const componentDetails =
-        row?.component_details ||
-        row?.component_obj ||
-        row?.component_data ||
-        row?.componentInfo ||
-        row?.component_info ||
-        (row?.component && typeof row.component === "object"
-          ? row.component
-          : null);
+      let componentName = String(
+        row?.component_name ||
+          row?.componentName ||
+          row?.name ||
+          row?.product_name ||
+          row?.productName ||
+          "",
+      ).trim();
 
-      const readType = (value) => {
-        if (value && typeof value === "object") {
-          return String(
-            value.name ||
-              value.component_type ||
-              value.componentType ||
-              value.label ||
-              "",
-          ).trim();
-        }
-        return String(value ?? "").trim();
-      };
+      /*
+       * Project Inventory display labels can be:
+       * "CMP-1786000787937 - Wings"
+       *
+       * Only remove a display separator containing spaces. Never split
+       * normal CMP codes on their internal hyphens.
+       */
+      if (!componentName) {
+        const componentLabel = String(
+          row?.component || "",
+        ).trim();
 
-      let componentType = [
-        row?.component_type,
-        row?.componentType,
-        componentDetails?.component_type,
-        componentDetails?.componentType,
-      ]
-        .map(readType)
-        .find(Boolean) || "";
+        const displayParts =
+          componentLabel.split(
+            /\s+[—–-]\s+/,
+          );
 
-      if (!componentType) {
-        const references = [
-          row?.component_pk,
-          row?.component_db_id,
-          row?.componentDatabaseId,
-          row?.component,
-          row?.component_id,
-          row?.componentId,
-          row?.component_code,
-          row?.componentCode,
-          row?.component_name,
-          row?.componentName,
-          componentDetails?.id,
-          componentDetails?.pk,
-          componentDetails?.component_id,
-          componentDetails?.component_code,
-          componentDetails?.code,
-          componentDetails?.name,
-          componentDetails?.component_name,
-        ]
-          .filter((value) => value !== undefined && value !== null && typeof value !== "object")
-          .map((value) => String(value).trim().toLowerCase())
-          .filter(Boolean);
+        componentName =
+          displayParts.length > 1
+            ? displayParts
+                .slice(1)
+                .join(" - ")
+                .trim()
+            : componentLabel;
+      }
 
-        const componentMaster = components.find((component) => {
-          const aliases = [
-            component?.id,
-            component?.pk,
-            component?.component_id,
-            component?.component_code,
-            component?.code,
-            component?.name,
-            component?.component_name,
-          ]
-            .filter((value) => value !== undefined && value !== null && value !== "")
-            .map((value) => String(value).trim().toLowerCase());
-
-          return references.some((reference) => aliases.includes(reference));
-        });
-
-        componentType = readType(
-          componentMaster?.component_type || componentMaster?.componentType,
-        );
+      if (!componentName) {
+        componentName =
+          row?.component_code ||
+          row?.componentCode ||
+          "Component";
       }
 
       const serials =
         source === "STORE"
           ? Array.from(
               new Set([
-                ...splitInventorySerials(row.issued_store_serials),
-                ...splitInventorySerials(row.issuedStoreSerials),
-                ...splitInventorySerials(row.store_issued_serials),
-                ...splitInventorySerials(row.storeIssuedSerials),
+                ...splitInventorySerials(
+                  row.issued_store_serials,
+                ),
+                ...splitInventorySerials(
+                  row.issuedStoreSerials,
+                ),
+                ...splitInventorySerials(
+                  row.store_issued_serials,
+                ),
+                ...splitInventorySerials(
+                  row.storeIssuedSerials,
+                ),
               ]),
             )
-          : getProjectIssuedPurchasedSerialsFromRow(row);
+          : getProjectIssuedPurchasedSerialsFromRow(
+              row,
+            );
 
       serials.forEach((serial) => {
         displayRows.push({
           serial: String(serial).trim(),
-          componentType,
+          componentName,
         });
       });
     });
@@ -4080,15 +4042,20 @@ export default function InventoryPage() {
     return displayRows
       .filter((item) => {
         if (!item.serial) return false;
-        const key = `${item.serial}|${item.componentType}`;
-        if (seen.has(key)) return false;
+
+        const key =
+          `${item.serial}|${item.componentName}`;
+
+        if (seen.has(key)) {
+          return false;
+        }
+
         seen.add(key);
         return true;
       })
-      .map((item) =>
-        item.componentType
-          ? `${item.serial} - ${item.componentType}`
-          : item.serial,
+      .map(
+        (item) =>
+          `${item.serial} - ${item.componentName}`,
       );
   };
 
@@ -5219,58 +5186,6 @@ return [
     );
   };
 
-  const getOutwardAllocationMetadata = (item = {}) => {
-    const raw =
-      item?.inventory_allocations ??
-      item?.inventoryAllocations ??
-      {};
-
-    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-      return raw;
-    }
-
-    if (typeof raw === "string") {
-      try {
-        const parsed = JSON.parse(raw);
-        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-          ? parsed
-          : {};
-      } catch (_error) {
-        return {};
-      }
-    }
-
-    return {};
-  };
-
-  const isReturnableQcWorkflow = (item = {}) => {
-    const workflow = String(
-      getOutwardAllocationMetadata(item).workflow || "",
-    )
-      .trim()
-      .toUpperCase();
-
-    return [
-      "RETURNABLE_COMPONENT_QC_V1",
-      "RETURNABLE_DRONE_QC_V1",
-    ].includes(workflow);
-  };
-
-  const hasManagerDispositionForReturnableQc = (item = {}) => {
-    if (!isReturnableQcWorkflow(item)) return false;
-
-    const metadata = getOutwardAllocationMetadata(item);
-    const decision = String(
-      metadata.manager_disposition_decision ||
-        metadata.reorder_choice ||
-        "",
-    )
-      .trim()
-      .toUpperCase();
-
-    return decision === "YES" || decision === "NO";
-  };
-
   const getQcFailedRows = (entry) => {
     if (!entry || typeof entry !== "object") return [];
     return (
@@ -5360,14 +5275,8 @@ const formatDate = (date) => {
       item.status ||
       "";
     const type = normalizeOutwardType(rawType);
-    const managerDisposedQc =
-      hasManagerDispositionForReturnableQc(item);
     const failed = isQcFailedItem(item);
-    const finalType = managerDisposedQc
-      ? "scrap"
-      : failed
-        ? "failedQc"
-        : type;
+    const finalType = failed ? "failedQc" : type;
     const typeLabel =
       finalType === "failedQc"
         ? "Failed QC"
@@ -5608,8 +5517,8 @@ const formatDate = (date) => {
     try {
       const [backendOutward, inwardEntries] = await Promise.all([
         fetchSharedPaginatedList(
-          "outward-inventory-summary",
-          `${config.baseURL}/outward/?paginate=1&page_size=100&summary=1`,
+          "outward",
+          `${config.baseURL}/outward/?page_size=500`,
           { cache: "no-store" },
         ).catch((error) => {
           console.warn("Outward API unavailable:", error);
@@ -5617,8 +5526,8 @@ const formatDate = (date) => {
         }),
 
         fetchSharedPaginatedList(
-          "inward-qc-failed",
-          `${config.baseURL}/inward/?paginate=1&page_size=100`,
+          "inward",
+          `${config.baseURL}/inward/?page_size=500`,
           { cache: "no-store" },
         ).catch((error) => {
           console.warn(
@@ -9808,6 +9717,7 @@ issued_to:
 
   const loadApprovedMaterialRequests = async () => {
     setLoadingRequests(true);
+    setAssemblyComponentUnitsError("");
 
     try {
       const [
@@ -9816,6 +9726,7 @@ issued_to:
         componentUsageRows,
         outwardRows,
         droneInstances,
+        finishedAssemblyComponents,
       ] = await Promise.all([
         fetchSharedPaginatedList(
           "material-requests",
@@ -9837,7 +9748,7 @@ issued_to:
 
         fetchSharedPaginatedList(
           "outward",
-          `${config.baseURL}/outward/?page_size=500&summary=1`,
+          `${config.baseURL}/outward/?page_size=500`,
           { cache: "no-store" },
         ).catch(() => []),
 
@@ -9851,7 +9762,29 @@ issued_to:
               ? payload.results
               : [],
         ).catch(() => []),
+
+        fetchAuthenticatedJson(
+          `${config.baseURL}/inventory/project-inventory/finished-assembly-components/`,
+          { cache: "no-store" },
+        ).then((payload) =>
+          Array.isArray(payload)
+            ? payload
+            : Array.isArray(payload?.results)
+              ? payload.results
+              : [],
+        ).catch((error) => {
+          console.error(
+            "Failed to load finished Assembly component units:",
+            error,
+          );
+          setAssemblyComponentUnitsError(
+            error?.message ||
+              "Unable to load completed Assembly component units.",
+          );
+          return [];
+        }),
       ]);
+      setAssemblyComponentUnits(finishedAssemblyComponents);
 
       /*
        * ----------------------------------------------------------
@@ -10911,25 +10844,12 @@ issued_to:
           item?.request_type || item?.requestType || "",
         ).trim().toUpperCase();
 
-        // Keep BOM, Custom BOM, R&D and From-Scrap builds out of In Drone
-        // until the Engineer uses Finish / Completed. After completion, show the assembled drone here;
-        // the Components and Cost Details actions read the exact issued
-        // ProjectInventory rows, including serial numbers and serial costs.
-        const isAssemblyRequest = [
-          "BOM",
-          "CUSTOM_BOM",
-          "CUSTOMIZED_BOM",
-          "CUSTOMISED_BOM",
-          "R&D",
-          "RD",
-        ].includes(requestType) || isFromScrapRequest(item);
-        const isFinishedAssemblyRequest = [
-          "MR_COMPLETED",
-          "ISSUED",
-          "COMPLETED",
-        ].includes(status);
-
-        if (isAssemblyRequest && !isFinishedAssemblyRequest) {
+        // BOM/R&D MRs are represented as component units after Finish, not
+        // as physical DroneInstance rows in the In Drone drone table.
+        if (
+          ["BOM", "R&D"].includes(requestType) &&
+          !isFromScrapRequest(item)
+        ) {
           return false;
         }
 
@@ -11809,6 +11729,7 @@ issued_to:
         error,
       );
       setApprovedRequests([]);
+      setAssemblyComponentUnits([]);
       setReturnedRequests([]);
     } finally {
       setLoadingRequests(false);
@@ -12436,19 +12357,10 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
   const visibleScrap = useMemo(() => {
     const filteredByTab = outwardData.filter((item) => {
       if (activeOutwardType === "scrap") {
-        return (
-          item.type === "scrap" &&
-          (hasManagerDispositionForReturnableQc(item) ||
-            !isQcFailedItem(item))
-        );
+        return item.type === "scrap" && !isQcFailedItem(item);
       }
       if (activeOutwardType === "failedQc") {
-        return (
-          item.type === "failedQc" ||
-          (item.type === "scrap" &&
-            (hasManagerDispositionForReturnableQc(item) ||
-              isQcFailedItem(item)))
-        );
+        return item.type === "failedQc" || (item.type === "scrap" && isQcFailedItem(item));
       }
       return item.type === activeOutwardType;
     });
@@ -12491,8 +12403,7 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
           String(item?.type || "")
             .trim()
             .toLowerCase() === "scrap" &&
-          (hasManagerDispositionForReturnableQc(item) ||
-            !isQcFailedItem(item)),
+          !isQcFailedItem(item),
       )
       .reduce((sum, item) => {
         const quantity = Number(
@@ -13220,25 +13131,20 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
           key: "remarks",
           header: "Remarks",
           className: "text-center text-sm",
-          render: (row) => {
-            const remarks = formatInventoryScrapRemarks(
-              row?.remarks || row?.reason,
-            );
-
-            return (
-              <div
-                className="mx-auto max-w-[240px] rounded-lg border border-border/70 bg-muted/30 px-3 py-2 text-left"
-                title={remarks}
-              >
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Scrap note
-                </div>
-                <div className="mt-1 line-clamp-3 break-words text-xs leading-5 text-foreground">
-                  {remarks}
-                </div>
-              </div>
-            );
-          },
+          render: (row) => (
+            <span
+              className="inline-block max-w-[200px] break-words text-center text-[14px] font-medium leading-5 text-muted-foreground"
+              title={
+                row?.remarks ||
+                row?.reason ||
+                ""
+              }
+            >
+              {row?.remarks ||
+                row?.reason ||
+                "-"}
+            </span>
+          ),
         },
         {
           key: "status",
@@ -14585,8 +14491,7 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
               .trim()
               .toLowerCase() ===
               "scrap" &&
-            (hasManagerDispositionForReturnableQc(item) ||
-              !isQcFailedItem(item)),
+            !isQcFailedItem(item),
         )
         .reduce(
           (sum, item) => {
@@ -15730,8 +15635,7 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
               .trim()
               .toLowerCase() ===
               "scrap" &&
-            (hasManagerDispositionForReturnableQc(item) ||
-              !isQcFailedItem(item)),
+            !isQcFailedItem(item),
         )
         .map((item) => {
           const quantity =
@@ -19196,7 +19100,8 @@ const getRowsForCurrentTab = () => {
 
           {(initialPageLoading ||
             loadingRequests ||
-            approvedRequests.length > 0) ? (
+            approvedRequests.length > 0 ||
+            assemblyComponentUnits.length > 0) ? (
             <div className="in-drone-table">
             <DataTable
               columns={[
@@ -19446,7 +19351,13 @@ const getRowsForCurrentTab = () => {
                       soldQty >= totalDroneQuantity;
 
                     const statusBadges = [
-                      // Retail Sales is a request type, not proof of a completed sale.
+                      isRetailSales
+                        ? {
+                            label: "Retail Sold",
+                            className:
+                              "border-emerald-200 bg-emerald-50 text-emerald-700",
+                          }
+                        : null,
                       row?.inDroneHasEngineerScrap
                         ? {
                             label:
@@ -19475,17 +19386,14 @@ const getRowsForCurrentTab = () => {
                         : null,
                       soldQty > 0
                         ? {
-                            label:
-                              isRetailSales && isFullySold
-                                ? "Retail Sold"
-                                : `Sold: ${soldQty}`,
+                            label: `Sold: ${soldQty}`,
                             className:
                               "border-emerald-200 bg-emerald-50 text-emerald-700",
                           }
                         : null,
                       pendingSaleQty > 0
                         ? {
-                            label: `Pending Management Approval: ${pendingSaleQty}`,
+                            label: `Sale Pending: ${pendingSaleQty}`,
                             className:
                               "border-amber-200 bg-amber-50 text-amber-700",
                           }
@@ -19537,7 +19445,8 @@ const getRowsForCurrentTab = () => {
                           </div>
                         )}
 
-                        {!row?.inDroneScrapSaleBlocked &&
+                        {!isRetailSales &&
+                          !row?.inDroneScrapSaleBlocked &&
                           !isFullySold &&
                           availableQuantity > 0 &&
                           canStartInDroneSale && (
@@ -19560,7 +19469,8 @@ const getRowsForCurrentTab = () => {
                             </button>
                           )}
 
-                        {!row?.inDroneScrapSaleBlocked &&
+                        {!isRetailSales &&
+                          !row?.inDroneScrapSaleBlocked &&
                           !statusBadges.length &&
                           (!canStartInDroneSale ||
                             availableQuantity <= 0) && (
@@ -19592,6 +19502,102 @@ const getRowsForCurrentTab = () => {
               they are processed.
             </div>
           )}
+          {assemblyComponentUnitsError && (
+            <div
+              role="alert"
+              className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300"
+            >
+              {assemblyComponentUnitsError}
+            </div>
+          )}
+          {assemblyComponentUnits.length > 0 && (
+            <section className="mt-6 space-y-3">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">
+                  Finished Assembly Component Units
+                </h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Completed component lines remain visible for traceability. In Drone Qty shows the units not yet returned.
+                </p>
+              </div>
+              <div className="in-drone-table">
+                <DataTable
+                  columns={[
+                    {
+                      key: "material_request_id",
+                      header: "MR ID",
+                      className: "text-center",
+                      render: (row) => row.material_request_id || "—",
+                    },
+                    {
+                      key: "project",
+                      header: "Project",
+                      render: (row) => row.project || "—",
+                    },
+                    {
+                      key: "component_id",
+                      header: "Component",
+                      render: (row) => (
+                        <div className="flex flex-col">
+                          <span className="font-semibold text-foreground">
+                            {row.component_id || "—"}
+                          </span>
+                          {row.component_name &&
+                            row.component_name !== row.component_id && (
+                              <span className="text-xs text-muted-foreground">
+                                {row.component_name}
+                              </span>
+                            )}
+                        </div>
+                      ),
+                    },
+                    {
+                      key: "component_type",
+                      header: "Component Type",
+                      render: (row) => row.component_type || "—",
+                    },
+                    {
+                      key: "issued_quantity",
+                      header: "Issued Qty",
+                      className: "text-center",
+                      render: (row) => row.issued_quantity,
+                    },
+                    {
+                      key: "returned_quantity",
+                      header: "Returned Qty",
+                      className: "text-center",
+                      render: (row) => row.returned_quantity,
+                    },
+                    {
+                      key: "remaining_quantity",
+                      header: "In Drone Qty",
+                      className: "text-center",
+                      render: (row) => (
+                        <span className="font-bold text-emerald-700">
+                          {row.remaining_quantity}
+                        </span>
+                      ),
+                    },
+                    {
+                      key: "serial_numbers",
+                      header: "Serial Numbers",
+                      render: (row) =>
+                        Array.isArray(row.serial_numbers) &&
+                        row.serial_numbers.length
+                          ? row.serial_numbers.join(", ")
+                          : "—",
+                    },
+                  ]}
+                  rows={assemblyComponentUnits}
+                  loading={loadingRequests}
+                  loadingTitle="Loading finished Assembly components..."
+                  loadingDescription="Calculating issued units remaining after Assembly returns."
+                  enableColumnTools
+                  keyField="id"
+                />
+              </div>
+            </section>
+          )}
           {inDroneSalesModal.open && inDroneSalesModal.row && (
             <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 p-4">
               <div className="w-full max-w-lg rounded-2xl border border-border bg-white p-6 shadow-2xl dark:bg-slate-950">
@@ -19601,7 +19607,7 @@ const getRowsForCurrentTab = () => {
                       Sales Details
                     </h3>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      Enter the customer, invoice and remarks. This Sale will remain pending until Management approves it, and will not be marked sold before approval.
+                      Enter the customer and invoice details. Finance/Admin will submit this MR to Management for Sales approval.
                     </p>
                     <p className="mt-2 text-xs font-semibold text-muted-foreground">
                       MR:{" "}
@@ -20286,11 +20292,14 @@ const getRowsForCurrentTab = () => {
                         </div>
 
                         <div className="overflow-x-auto rounded-2xl border border-border">
-                          <table className="min-w-[1700px] w-full text-xs">
+                          <table className="min-w-[1900px] w-full text-xs">
                             <thead className="border-b border-slate-200 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
                               <tr>
                                 <th className="min-w-[130px] px-3 py-3 text-center">
                                   Component ID
+                                </th>
+                                <th className="min-w-[180px] px-3 py-3 text-center">
+                                  Component
                                 </th>
                                 <th className="min-w-[240px] px-3 py-3 text-center">
                                   Specification
@@ -20338,6 +20347,10 @@ const getRowsForCurrentTab = () => {
                                 >
                                   <td className="px-3 py-3 text-center font-semibold text-primary">
                                     {item.componentCode}
+                                  </td>
+
+                                  <td className="px-3 py-3 text-center font-medium text-foreground">
+                                    {item.componentName}
                                   </td>
 
                                   <td className="px-3 py-3 text-center text-muted-foreground">
@@ -20523,7 +20536,42 @@ const getRowsForCurrentTab = () => {
                   )}
 
                   {!isFromScrapRequest(selectedRequest) &&
-                  bomDetails && bomDetails.items && bomDetails.items.length > 0 ? null : rdDetails && (
+                  bomDetails && bomDetails.items && bomDetails.items.length > 0 ? (
+                    <div className="overflow-x-auto rounded-3xl border border-border bg-white p-3 shadow-sm dark:border-slate-700 dark:bg-slate-950">
+                      <table className="min-w-full text-sm">
+                        <thead className="bg-slate-100 text-left text-xs uppercase tracking-[0.15em] text-muted-foreground dark:bg-slate-800">
+                          <tr>
+                            <th className="p-3">Component</th>
+                            <th className="p-3">HSN No</th>
+                            <th className="p-3">Category</th>
+                            <th className="p-3 text-right">Qty</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border">
+                          {bomDetails.items.map((it, i) => (
+                            <tr key={i} className="bg-white dark:bg-slate-900">
+                              <td className="p-3 font-medium text-foreground dark:text-slate-100">
+                                {it.component_name ||
+                                  it.component_code ||
+                                  it.component ||
+                                  it.name ||
+                                  "-"}
+                              </td>
+                              <td className="p-3 text-muted-foreground">
+                                {resolveInventoryHsn(it)}
+                              </td>
+                              <td className="p-3 text-muted-foreground">
+                                {it.category || it.component_category || "-"}
+                              </td>
+                              <td className="p-3 text-right text-foreground">
+                                {it.quantity ?? it.qty ?? it.required_quantity ?? 1}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : rdDetails && (
                     (Array.isArray(rdDetails.request_items) && rdDetails.request_items.length > 0) ||
                     (Array.isArray(rdDetails.rd_items) && rdDetails.rd_items.length > 0)
                   ) ? (
