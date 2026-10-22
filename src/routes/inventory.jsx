@@ -248,10 +248,35 @@ const createEmptyOutwardItem = () => ({
 
 const getReadableApiError = (error, fallback) => {
   if (!error) return fallback;
-  if (typeof error === "string") return error;
-  if (typeof error?.message === "string" && error.message.trim()) {
-    return error.message;
-  }
+
+  const readableText = (value) => {
+    if (typeof value !== "string") return "";
+    const text = value.trim();
+    if (!text) return "";
+    if (!/<(?:!doctype\s+html|html\b|head\b|body\b)/i.test(text)) {
+      return text;
+    }
+
+    // Django debug pages can be returned as the API response body. Avoid
+    // showing the full HTML in alert(); keep only its title and guidance.
+    const title = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
+      ?.replace(/<[^>]+>/g, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;|&apos;/gi, "'")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    return title
+      ? `The server returned ${title}. Check the Django terminal for the exact database error.`
+      : "The server returned an error page. Check the Django terminal for the exact database error.";
+  };
+
+  const directMessage =
+    readableText(error) || readableText(error?.message);
+  if (directMessage) return directMessage;
 
   const payload =
     error?.data ||
@@ -261,7 +286,9 @@ const getReadableApiError = (error, fallback) => {
     error;
 
   try {
-    if (typeof payload === "string") return payload;
+    if (typeof payload === "string") {
+      return readableText(payload) || payload.trim() || fallback;
+    }
     const serialized = JSON.stringify(payload, null, 2);
     return serialized && serialized !== "{}" ? serialized : fallback;
   } catch (_error) {
@@ -723,6 +750,7 @@ export default function InventoryPage() {
     const [vendors, setVendors] = useState([]);
   const [components, setComponents] = useState([]);
   const [purchaseOrders, setPurchaseOrders] = useState([]);
+  const [purchaseHistoryInventoryRows, setPurchaseHistoryInventoryRows] = useState([]);
   const [qcInventory, setQcInventory] = useState([]);
   const [scrapEntries, setScrapEntries] = useState(() => getStoredScrapEntries());
   const [approvedRequests, setApprovedRequests] = useState([]);
@@ -8733,6 +8761,13 @@ async function loadInventoryData(
        * is zero.
        */
       if (inventoryEndpointSucceeded) {
+        // Keep the raw receipt rows for Purchase History. The visible In Store
+        // table groups receipts by component, which hides individual buys and
+        // also drops fully issued receipts from its current-balance view.
+        setPurchaseHistoryInventoryRows(
+          Array.isArray(inventoryList) ? inventoryList : [],
+        );
+
         const activeInventoryRows =
           inventoryList
             .filter((item) => {
@@ -9026,6 +9061,11 @@ issued_to:
           components,
           purchaseOrders
         );
+
+        setPurchaseHistoryInventoryRows([
+          ...normalized,
+          ...manualInventory,
+        ]);
 
         persistInventory([
   ...normalized,
@@ -15871,70 +15911,286 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
     );
 
     const getPurchaseHistoryForComponent = (component) => {
-      const cutoff = new Date();
-      cutoff.setMonth(cutoff.getMonth() - 24);
-      const componentIds = new Set(
-        [component?.id, component?.component_id, component?.code]
-          .filter((value) => value !== undefined && value !== null)
-          .map((value) => String(value).trim().toUpperCase()),
-      );
+      const normalizeHistoryKey = (value) =>
+        String(value ?? "")
+          .trim()
+          .replace(/\s+/g, " ")
+          .toUpperCase();
 
-      return purchaseOrders
-        .flatMap((order) => {
-          const orderDate = order?.po_date || order?.date || order?.created_at;
-          const parsedDate = orderDate ? new Date(orderDate) : null;
-          if (!parsedDate || Number.isNaN(parsedDate.getTime()) || parsedDate < cutoff) {
-            return [];
-          }
+      const componentKeysFor = (row = {}, isMaster = false) => {
+        const nested = [
+          row?.component && typeof row.component === "object" ? row.component : null,
+          row?.component_details,
+          row?.componentDetails,
+          row?.component_obj,
+          row?.component_data,
+        ].filter(Boolean);
+        const values = [
+          ...(isMaster ? [row?.id, row?.pk, row?.code] : []),
+          row?.component,
+          row?.component_id,
+          row?.componentId,
+          row?.component_code,
+          row?.componentCode,
+          row?.component_name,
+          row?.componentName,
+          ...nested.flatMap((item) => [
+            item?.id,
+            item?.pk,
+            item?.component_id,
+            item?.component_code,
+            item?.code,
+            item?.name,
+            item?.component_name,
+          ]),
+        ];
+        return new Set(
+          values
+            .filter((value) => value !== undefined && value !== null && typeof value !== "object")
+            .map(normalizeHistoryKey)
+            .filter(Boolean),
+        );
+      };
 
-          const vendor = order?.vendor_name || order?.vendor?.name || order?.vendor || "-";
-          const mrId =
-            order?.source_mr_number ||
+      const selectedComponentKeys = componentKeysFor(component, true);
+      const matchesComponent = (row) =>
+        Array.from(componentKeysFor(row)).some((value) => selectedComponentKeys.has(value));
+
+      const parseHistoryDate = (...values) => {
+        for (const value of values) {
+          if (!value) continue;
+          const date = value instanceof Date ? value : new Date(value);
+          if (!Number.isNaN(date.getTime())) return date;
+        }
+        return null;
+      };
+
+      const getQuantity = (row = {}) => {
+        const value = Number(
+          row?.quantity ??
+            row?.qty ??
+            row?.ordered_quantity ??
+            row?.orderedQuantity ??
+            row?.received_quantity ??
+            row?.receivedQuantity ??
+            0,
+        );
+        return Number.isFinite(value) ? Math.max(value, 0) : 0;
+      };
+
+      const getUnitPrice = (row = {}, quantity = 0) => {
+        const direct = Number(
+          row?.unit_price ??
+            row?.unitPrice ??
+            row?.price ??
+            row?.rate ??
+            0,
+        );
+        if (Number.isFinite(direct) && direct > 0) return direct;
+
+        const total = Number(
+          row?.total_price ??
+            row?.totalPrice ??
+            row?.line_total ??
+            row?.lineTotal ??
+            row?.grand_total ??
+            row?.grandTotal ??
+            row?.amount ??
+            0,
+        );
+        return Number.isFinite(total) && total > 0 && quantity > 0
+          ? total / quantity
+          : Number.isFinite(direct) && direct >= 0
+            ? direct
+            : 0;
+      };
+
+      const getPoNumber = (row = {}) => {
+        const value =
+          row?.purchase_order_number ??
+          row?.purchaseOrderNumber ??
+          row?.po_number ??
+          row?.poNumber ??
+          row?.po ??
+          row?.purchase_order ??
+          row?.purchaseOrder ??
+          "";
+        if (value && typeof value === "object") {
+          return String(
+            value?.po_number ||
+              value?.purchase_order_number ||
+              value?.po ||
+              value?.number ||
+              value?.id ||
+              "",
+          ).trim() || "-";
+        }
+        return String(value || "").trim() || "-";
+      };
+
+      const getVendorName = (row = {}) => {
+        const value =
+          row?.vendor_name ??
+          row?.vendorName ??
+          row?.vendor_details ??
+          row?.vendorDetails ??
+          row?.vendor ??
+          "";
+        if (value && typeof value === "object") {
+          return String(
+            value?.name ||
+              value?.vendor_name ||
+              value?.company_name ||
+              value?.label ||
+              "",
+          ).trim() || "-";
+        }
+        return String(value || "").trim() || "-";
+      };
+
+      const poLineRecords = purchaseOrders.flatMap((order, orderIndex) => {
+        const orderDate = parseHistoryDate(
+          order?.po_date,
+          order?.purchase_order_date,
+          order?.order_date,
+          order?.ordered_date,
+          order?.purchase_date,
+          order?.date,
+          order?.created_at,
+          order?.createdAt,
+        );
+        const items = [
+          order?.items,
+          order?.line_items,
+          order?.lineItems,
+          order?.po_items,
+          order?.purchase_order_items,
+          order?.purchaseOrderItems,
+          order?.components,
+        ].find(Array.isArray) || [];
+
+        const poNumber = getPoNumber(order);
+        const vendor = getVendorName(order);
+        const mrId = String(
+          order?.source_mr_number ||
+            order?.sourceMrNumber ||
+            order?.material_request_number ||
             order?.material_request_id ||
             order?.request_id ||
             order?.mr_number ||
-            "";
-          const items = Array.isArray(order?.items) ? order.items : [];
+            "",
+        ).trim();
 
-          return items.flatMap((item) => {
-            const itemComponent = item?.component;
-            const itemIds = [
-              typeof itemComponent === "object" ? itemComponent?.id : itemComponent,
-              item?.component_id,
-              item?.componentId,
-              typeof itemComponent === "object" ? itemComponent?.component_id : "",
-              item?.component_code,
-              item?.code,
-            ]
-              .filter((value) => value !== undefined && value !== null)
-              .map((value) => String(value).trim().toUpperCase());
+        return items.flatMap((item, itemIndex) => {
+          if (!matchesComponent(item)) return [];
+          const quantity = getQuantity(item);
+          if (quantity <= 0) return [];
+          const date = parseHistoryDate(
+            item?.po_date,
+            item?.date,
+            item?.created_at,
+            orderDate,
+          );
+          return [{
+            id: `po-${order?.id || poNumber || orderIndex}-${item?.id || itemIndex}`,
+            date,
+            source: "PO Order",
+            poNumber,
+            reference: mrId ? `MR: ${mrId}` : "Purchase Order",
+            vendor,
+            unitPrice: getUnitPrice(item, quantity),
+            quantity,
+          }];
+        });
+      });
 
-            if (!itemIds.some((value) => componentIds.has(value))) return [];
+      const inStoreReceiptRecords = purchaseHistoryInventoryRows.flatMap((row, index) => {
+        const sourceMrNumber = String(
+          row?.source_mr_number ||
+            row?.sourceMrNumber ||
+            row?.material_request_number ||
+            row?.materialRequestNumber ||
+            "",
+        ).trim();
+        if (sourceMrNumber || !matchesComponent(row)) return [];
 
-            const unitPrice = Number(
-              item?.unit_price ?? item?.unitPrice ?? item?.price ?? item?.total_price ?? 0,
-            );
-            return [{
-              id: `${order?.id || order?.po_number}-${item?.id || itemIds.join("-")}`,
-              date: parsedDate,
-              poNumber: order?.po_number || order?.po || "-",
-              reference: mrId ? `MR: ${mrId}` : "Direct PO",
-              vendor,
-              unitPrice: Number.isFinite(unitPrice) ? unitPrice : 0,
-              quantity: Number(item?.quantity || 0),
-            }];
-          });
-        })
-        .sort((left, right) => right.date - left.date);
+        const date = parseHistoryDate(
+          row?.received_date,
+          row?.receivedDate,
+          row?.date,
+          row?.created_at,
+          row?.createdAt,
+        );
+        const inventoryCode = String(
+          row?.inventory_code ||
+            row?.inventoryCode ||
+            row?.code ||
+            row?.grn ||
+            row?.inward_code ||
+            "",
+        ).trim();
+        const currentQuantity = getQuantity(row);
+        const issuedSerialCount = splitInventorySerials(
+          row?.issued_serial_numbers || row?.issuedSerialNumbers || [],
+        ).length;
+        const originalQuantityValue = Number(
+          row?.source_original_quantity ??
+            row?.original_quantity ??
+            row?.originalQuantity ??
+            row?.received_quantity ??
+            row?.receivedQuantity,
+        );
+        const quantity = Number.isFinite(originalQuantityValue) && originalQuantityValue > 0
+          ? originalQuantityValue
+          : currentQuantity + issuedSerialCount;
+        if (quantity <= 0) return [];
+
+        const serials = splitInventorySerials(
+          row?.serial_numbers || row?.serialNumbers || row?.serials || [],
+        );
+        const isManual =
+          row?.manual === true ||
+          row?.is_manual === true ||
+          String(row?.source || "").toLowerCase() === "manual" ||
+          serials.some((serial) => /^CINV_/i.test(serial)) ||
+          /^INV(?:_|-|\d)/i.test(inventoryCode);
+        const poNumber = getPoNumber(row);
+        const source = isManual
+          ? "Add Stock"
+          : poNumber !== "-"
+            ? "PO → In Store"
+            : String(row?.source || "").toLowerCase() === "inward"
+              ? "Inward → In Store"
+              : "In Store Receipt";
+        const reference = isManual
+          ? `Add Stock receipt${inventoryCode ? ` · ${inventoryCode}` : ""}`
+          : `In Store receipt${inventoryCode ? ` · ${inventoryCode}` : ""}`;
+
+        return [{
+          id: `stock-${row?.id || row?.pk || inventoryCode || index}`,
+          date,
+          source,
+          poNumber,
+          reference,
+          vendor: getVendorName(row),
+          unitPrice: getUnitPrice(row, quantity),
+          quantity,
+        }];
+      });
+
+      return [...poLineRecords, ...inStoreReceiptRecords].sort((left, right) =>
+        (right.date?.getTime() || 0) - (left.date?.getTime() || 0),
+      );
     };
 
     const getSortedPurchaseHistoryForComponent = (component) => {
       const filters = purchaseHistoryModal.filters || {};
       const records = getPurchaseHistoryForComponent(component).filter((record) => {
         const values = {
-          date: record.date.toLocaleDateString("en-IN"),
+          date: record.date?.toLocaleDateString("en-IN") || "-",
           poNumber: record.poNumber,
           reference: record.reference,
+          source: record.source,
           vendor: record.vendor,
           quantity: record.quantity,
           unitPrice: record.unitPrice,
@@ -15949,7 +16205,7 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
 
       return records.sort((left, right) => {
         if (sortKey === "date") {
-          return (left.date - right.date) * direction;
+          return ((left.date?.getTime() || 0) - (right.date?.getTime() || 0)) * direction;
         }
 
         if (sortKey === "unitPrice") {
@@ -17651,7 +17907,7 @@ const getRowsForCurrentTab = () => {
             type="button"
             onClick={() => setPurchaseHistoryModal({ open: true, component: null })}
             className="inline-flex items-center gap-2 rounded-full border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-700 transition hover:border-sky-300 hover:bg-sky-100"
-            title="View component purchase history for the last 24 months"
+            title="View all purchase orders and In Store receipt history for each component"
           >
             <CalendarDays className="size-4" />
             Purchase History
@@ -22164,7 +22420,9 @@ const getRowsForCurrentTab = () => {
       <div className="flex items-center justify-between border-b border-border px-6 py-4">
         <div>
           <h3 className="text-lg font-semibold text-foreground">Component Purchase History</h3>
-          <p className="mt-1 text-sm text-muted-foreground">Purchase records from the last 24 months.</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            All PO orders, Add Stock entries, and PO receipts added to In Store.
+          </p>
         </div>
         <button
           type="button"
@@ -22214,10 +22472,19 @@ const getRowsForCurrentTab = () => {
                   },
                   {
                     key: "date",
-                    header: "PO Date",
-                    render: (record) => record.date.toLocaleDateString("en-IN"),
-                    filterValue: (record) => record.date.toLocaleDateString("en-IN"),
-                    sortValue: (record) => record.date.getTime(),
+                    header: "Date",
+                    render: (record) => record.date?.toLocaleDateString("en-IN") || "-",
+                    filterValue: (record) => record.date?.toLocaleDateString("en-IN") || "-",
+                    sortValue: (record) => record.date?.getTime() || 0,
+                  },
+                  {
+                    key: "source",
+                    header: "Source",
+                    render: (record) => (
+                      <span className="inline-flex max-w-[150px] whitespace-normal rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-semibold leading-4 text-sky-800 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-200">
+                        {record.source || "Purchase"}
+                      </span>
+                    ),
                   },
                   { key: "poNumber", header: "PO Number" },
                   { key: "reference", header: "Reference" },
