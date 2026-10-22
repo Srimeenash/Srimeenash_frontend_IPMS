@@ -522,6 +522,22 @@ export default function FinanceNotifications() {
         ""
     ).trim();
 
+  const normalizeFinanceDecisionStatus = (status, notification = {}, record = {}) => {
+    const normalized = String(status || "").trim().toUpperCase();
+    if (normalized !== "REJECTED") return normalized;
+
+    const actor = String(
+      record?.rejected_by_role || record?.rejected_by ||
+      notification?.rejected_by_role || notification?.rejected_by || "",
+    ).toUpperCase();
+    if (actor.includes("MANAGER")) return "MANAGER_REJECTED";
+    if (actor.includes("FINANCE") ||
+        String(notification?.receiver || "").toUpperCase() === "FINANCE") {
+      return "FINANCE_REJECTED";
+    }
+    return "REJECTED";
+  };
+
   const getPOStatus = (po = {}, notification = {}) => {
     const notificationStatus = String(
       notification?.status ||
@@ -572,11 +588,10 @@ export default function FinanceNotifications() {
       return poStatus;
     }
 
-    return (
-      poApprovalStatus ||
-      poStatus ||
-      notificationStatus ||
-      ""
+    return normalizeFinanceDecisionStatus(
+      poApprovalStatus || poStatus || notificationStatus || "",
+      notification,
+      po,
     );
   };
 
@@ -1870,14 +1885,14 @@ export default function FinanceNotifications() {
   };
 
   const getScrapStatus = (notification = {}) =>
-    String(
+    normalizeFinanceDecisionStatus(
       notification?.scrapDetails?.approval_status ||
         notification?.scrapDetails?.status ||
         notification?.status ||
-        "PENDING_FINANCE"
-    )
-      .trim()
-      .toUpperCase();
+        "PENDING_FINANCE",
+      notification,
+      notification?.scrapDetails || {},
+    );
 
   const getScrapComponentLabel = (scrap = {}) => {
     const code = String(
@@ -2303,14 +2318,9 @@ export default function FinanceNotifications() {
       applyProcessedScrapState(
         isReject
           ? (
-              [
-                "FINANCE_REJECTED",
-                "REJECTED",
-              ].includes(
-                backendStatus
-              )
-                ? backendStatus
-                : "FINANCE_REJECTED"
+              // A legacy generic REJECTED response still represents the
+              // Finance action that was just performed.
+              "FINANCE_REJECTED"
             )
           : (
               [
@@ -2624,13 +2634,12 @@ export default function FinanceNotifications() {
                       status
                     );
 
+                  const isManagerRejected = status === "MANAGER_REJECTED";
                   const isRejected =
                     [
                       "FINANCE_REJECTED",
                       "REPLACEMENT_FINANCE_REJECTED",
-                    ].includes(
-                      status
-                    );
+                    ].includes(status);
 
                   const items = Array.isArray(
                     po.items
@@ -2802,6 +2811,8 @@ export default function FinanceNotifications() {
                                   ? "Replacement Finance Approved"
                                   : "Finance Approved"
                               )
+                            : isManagerRejected
+                            ? "Manager Rejected"
                             : isRejected
                             ? (
                                 isReplacementPO
@@ -2818,7 +2829,8 @@ export default function FinanceNotifications() {
 
                       <div className="flex justify-center gap-2">
                         {isApproved ||
-                        isRejected ? (
+                        isRejected ||
+                        isManagerRejected ? (
                           <button
                             type="button"
                             className="rounded-lg bg-slate-500 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-600 dark:bg-slate-700 dark:hover:bg-slate-600"
@@ -3429,7 +3441,7 @@ export default function FinanceNotifications() {
                           {isRejected
                             ? "Finance Rejected"
                             : isApproved
-                            ? "Approved"
+                            ? "Finance Approved"
                             : status === "MANAGER_REJECTED"
                             ? "Manager Rejected"
                             : status === "PENDING_MANAGER"

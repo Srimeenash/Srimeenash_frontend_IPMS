@@ -867,6 +867,28 @@ const getManagerMrTypeLabel = (request = {}) => {
 };
 
 
+const getManagerMrDecisionStatus = (request = {}, notification = {}) => {
+  const normalize = (value) => String(value || "").trim().toUpperCase();
+  const requestApproval = normalize(request?.approval_status);
+  const requestWorkflow = normalize(request?.status);
+  const notificationStatus = normalize(notification?.status);
+
+  if ([requestApproval, requestWorkflow].includes("MANAGER_REJECTED")) {
+    return "MANAGER_REJECTED";
+  }
+  if ([requestApproval, requestWorkflow].includes("FINANCE_REJECTED")) {
+    return "FINANCE_REJECTED";
+  }
+  // Old manager-owned MR notifications saved REJECTED instead of
+  // MANAGER_REJECTED. The matching MR is checked first above.
+  if (notificationStatus === "REJECTED") {
+    return "MANAGER_REJECTED";
+  }
+  if (notificationStatus) return notificationStatus;
+  if (requestApproval === "MANAGER_APPROVED") return "MANAGER_APPROVED";
+  return requestWorkflow || requestApproval || "PENDING_MANAGER";
+};
+
 const normalizeRequestStatus = (item) => {
   let rawStatus = String(
     item.approval_status || item.status || "NOT_REQUESTED"
@@ -3393,7 +3415,9 @@ if (isManager) {
     [
       "PENDING_MANAGER",
       "MANAGER_APPROVED",
-      "MANAGER_REJECTED"
+      "MANAGER_REJECTED",
+      "REJECTED", // Legacy manager rejection notifications
+      "FINANCE_REJECTED"
     ].includes(status)
   );
 }
@@ -3988,6 +4012,7 @@ if (isInventory) {
             return {
               ...n,
               id: n.id,
+              status: getManagerMrDecisionStatus(mr, n),
 
               /*
                * Keep the real backend MR database id available for the
@@ -4883,8 +4908,8 @@ else if (
   };
 }
 if (
-  approvalStatus === "REJECTED" &&
-  resourceType === "MR"
+  resourceType === "MR" &&
+  ["REJECTED", "MANAGER_REJECTED"].includes(approvalStatus)
 ) {
   statusMapping = {
     approval_status: "MANAGER_REJECTED",
@@ -4904,6 +4929,8 @@ else if (approvalStatus === "REJECTED") {
       status:
         resourceType === "MR" && approvalStatus === "MANAGER_APPROVED"
           ? "MANAGER_APPROVED"
+          : resourceType === "MR" && ["REJECTED", "MANAGER_REJECTED"].includes(approvalStatus)
+          ? "MANAGER_REJECTED"
           : approvalStatus === "PENDING_MANAGER"
           ? "PENDING_MANAGER"
           : approvalStatus,
@@ -5924,6 +5951,8 @@ const deleteNotification = async (id) => {
       case "MODIFIED":
         return "bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-900 dark:text-blue-200";
 
+      case "FINANCE_REJECTED":
+        return "bg-red-100 text-red-700 border-red-200 dark:bg-red-900 dark:text-red-200";
       case "MANAGER_REJECTED":
         return "bg-red-100 text-red-700 border-red-200 dark:bg-red-900 dark:text-red-200";
       default:
@@ -5990,7 +6019,9 @@ const poNotifications = rawNotifications
           [
             "PENDING_MANAGER",
             "MANAGER_APPROVED",
-            "MANAGER_REJECTED"
+            "MANAGER_REJECTED",
+            "REJECTED", // Legacy manager rejection notifications
+            "FINANCE_REJECTED"
           ].includes(status)
         );
       }
@@ -7491,7 +7522,7 @@ hover:shadow-md
                               : "Manager Approve"}
                           </button>
                           <button
-                            onClick={() => handleOpenRejectModal(n, "REJECTED")}
+                            onClick={() => handleOpenRejectModal(n, "MANAGER_REJECTED")}
 className="
 px-4
 py-2
@@ -7525,7 +7556,7 @@ hover:shadow-md
                               : "Manager Approve"}
                           </button>
                           <button
-                            onClick={() => handleOpenRejectModal(n, "REJECTED")}
+                            onClick={() => handleOpenRejectModal(n, "MANAGER_REJECTED")}
                             className="rounded-lg bg-red-600 px-3.5 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-red-700 dark:bg-rose-600 dark:hover:bg-rose-700"
                           >
                             Manager Reject
@@ -7535,9 +7566,13 @@ hover:shadow-md
 
 {(status === "MANAGER_APPROVED" ||
   status === "MANAGER_REJECTED" ||
+  status === "FINANCE_REJECTED" ||
   status === "APPROVED" ||
   status === "REJECTED") && (
   <>
+    <span className={`inline-flex items-center rounded-full border px-2 py-1 text-xs font-semibold ${getStatusStyle(status)}`}>
+      {{ MANAGER_APPROVED: "Manager Approved", MANAGER_REJECTED: "Manager Rejected", FINANCE_REJECTED: "Finance Rejected", APPROVED: "Approved", REJECTED: "Rejected" }[status] || status}
+    </span>
     <button
       onClick={() => deleteNotification(n.id)}
 className="
@@ -7709,7 +7744,7 @@ transition-all
                               <button
                                 type="button"
                                 disabled={isNotificationActionProcessing(actionKey)}
-                                onClick={() => handleOpenRejectModal(mr, "REJECTED")}
+                                onClick={() => handleOpenRejectModal(mr, "MANAGER_REJECTED")}
                                 className="rounded-lg bg-red-600 px-3 py-2 text-[13px] font-semibold text-white disabled:opacity-50"
                               >
                                 Manager Reject
@@ -8087,7 +8122,7 @@ transition-all
                               onClick={() =>
                                 handleOpenRejectModal(
                                   mr,
-                                  "REJECTED",
+                                  "MANAGER_REJECTED",
                                 )
                               }
                               className="rounded-lg bg-red-600 px-3 py-2 text-[12px] font-semibold text-white disabled:opacity-50"

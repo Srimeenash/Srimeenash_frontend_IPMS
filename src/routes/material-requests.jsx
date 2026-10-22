@@ -90,6 +90,38 @@ const MR_STATUS_PRESENTATION = {
     actionClass:
       "border-rose-600 bg-rose-600 text-white dark:border-rose-500 dark:bg-rose-500",
   },
+  FINANCE_APPROVED: {
+    statusLabel: "Finance Approved",
+    statusClass:
+      "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300",
+    actionLabel: "Finance Approved",
+    actionClass:
+      "border-emerald-600 bg-emerald-600 text-white dark:border-emerald-500 dark:bg-emerald-500",
+  },
+  FINANCE_REJECTED: {
+    statusLabel: "Finance Rejected",
+    statusClass:
+      "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-300",
+    actionLabel: "Finance Rejected",
+    actionClass:
+      "border-rose-600 bg-rose-600 text-white dark:border-rose-500 dark:bg-rose-500",
+  },
+  PENDING_FINANCE: {
+    statusLabel: "Pending Finance",
+    statusClass:
+      "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300",
+    actionLabel: "Pending Finance",
+    actionClass:
+      "border-amber-600 bg-amber-600 text-white dark:border-amber-500 dark:bg-amber-500",
+  },
+  REJECTED: {
+    statusLabel: "Rejected",
+    statusClass:
+      "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-300",
+    actionLabel: "Rejected",
+    actionClass:
+      "border-rose-600 bg-rose-600 text-white dark:border-rose-500 dark:bg-rose-500",
+  },
   PROCUREMENT_PENDING: {
     statusLabel: "Procurement Pending",
     statusClass:
@@ -933,6 +965,31 @@ function MaterialRequestsPage() {
       .trim()
       .toUpperCase();
 
+    // An explicit decision is authoritative even if an older workflow
+    // field has not been synchronized yet.
+    const statuses = [workflowStatus, approvalStatus];
+    if (statuses.includes("FINANCE_REJECTED")) return "FINANCE_REJECTED";
+    if (statuses.includes("MANAGER_REJECTED")) return "MANAGER_REJECTED";
+
+    if (statuses.includes("REJECTED")) {
+      // Legacy REJECTED is ambiguous. Resolve only from actual actor metadata;
+      // never assume every rejection came from Finance (or Manager).
+      const actor = String(
+        row?.rejected_by_role ||
+          row?.rejectedByRole ||
+          row?.rejected_by_role_name ||
+          row?.rejectedByRoleName ||
+          row?.rejected_by ||
+          row?.rejectedBy ||
+          row?.latest_approval?.rejected_by_role ||
+          row?.latest_approval?.role ||
+          "",
+      ).toUpperCase();
+      if (actor.includes("FINANCE")) return "FINANCE_REJECTED";
+      if (actor.includes("MANAGER")) return "MANAGER_REJECTED";
+      return "REJECTED";
+    }
+
     /*
      * The MR workflow status must take priority after Manager approval.
      * approval_status normally remains MANAGER_APPROVED while the MR moves
@@ -966,13 +1023,13 @@ function MaterialRequestsPage() {
       return "PO_DELIVERED";
     }
 
-    if (
-      workflowStatus === "MANAGER_REJECTED" ||
-      workflowStatus === "REJECTED" ||
-      approvalStatus === "MANAGER_REJECTED" ||
-      approvalStatus === "REJECTED"
-    ) {
-      return "MANAGER_REJECTED";
+    // Final Finance approval can also be represented on the MR itself.
+    if (statuses.includes("FINANCE_APPROVED")) {
+      return "FINANCE_APPROVED";
+    }
+
+    if (statuses.includes("PENDING_FINANCE")) {
+      return "PENDING_FINANCE";
     }
 
     if (
@@ -2602,13 +2659,7 @@ function MaterialRequestsPage() {
       row.latest_approval?.remarks ||
       "";
     const buildStatus = (details) =>
-      String(
-        details.approval_status ||
-          details.status ||
-          row.approval_status ||
-          row.status ||
-          "REJECTED",
-      ).toUpperCase();
+      getVisibleApprovalStatus({ ...row, ...(details || {}) });
 
     try {
       const details = await fetchAuthenticatedJson(
@@ -8178,9 +8229,11 @@ columns={[...([
                   visibleStatus,
                 );
 
-              const isRejected =
-                visibleStatus ===
-                "MANAGER_REJECTED";
+              const isRejected = [
+                "MANAGER_REJECTED",
+                "FINANCE_REJECTED",
+                "REJECTED",
+              ].includes(visibleStatus);
 
               const statusBadge = (
                 <span
@@ -8450,7 +8503,7 @@ columns={[...([
         <div className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center px-4">
           <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-950 dark:text-slate-100">
             <h2 className="text-lg font-semibold">
-             {["REJECTED", "MANAGER_REJECTED"].includes(rejectPopup.status)
+             {["REJECTED", "MANAGER_REJECTED", "FINANCE_REJECTED"].includes(rejectPopup.status)
   ? "Rejection Details"
   : "Status Details"}
             </h2>
@@ -8999,7 +9052,7 @@ columns={[...([
                   ["Project", getProjectDisplayValue(bomDetails.request.project_name || bomDetails.request.project) || "-"],
                   ["Created", bomDetails.request.date || bomDetails.request.created_at || "-"],
                   ["Required Date", bomDetails.request.required_date || bomDetails.request.requiredDate || "-"],
-                  ["Status", bomDetails.request.status || bomDetails.request.approval_status || "-"],
+                  ["Status", getMrStatusPresentation(getVisibleApprovalStatus(bomDetails.request)).statusLabel],
                   ["Remarks", bomDetails.request.remarks || bomDetails.request.description || "-"],
                 ].map(([label, value]) => (
                   <div key={label} className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 dark:border-slate-700 dark:bg-slate-950">
@@ -9673,6 +9726,8 @@ columns={[...([
                   "APPROVED",
                   "REJECTED",
                   "MANAGER_REJECTED",
+                  "FINANCE_REJECTED",
+                  "FINANCE_APPROVED",
                   "PO_RAISED",
                   "PARTIALLY_DELIVERED",
                   "PO_DELIVERED",
