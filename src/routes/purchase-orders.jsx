@@ -907,6 +907,42 @@ const REPLACEMENT_STATUS_LABELS = {
   REPLACEMENT_RECEIVED:
     "Replacement Received",
 };
+
+const RESTORE_PO_STATUS_LABELS = {
+  REPLACEMENT_PENDING_MANAGER:
+    "Pending Procurement Approval",
+  REPLACEMENT_PENDING_FINANCE:
+    "Pending Finance Approval",
+  REPLACEMENT_MANAGER_REJECTED:
+    "Procurement Rejected",
+  REPLACEMENT_FINANCE_REJECTED:
+    "Finance Rejected",
+  REPLACEMENT_APPROVED:
+    "Finance Approved",
+  REPLACEMENT_ORDERED:
+    "Ordered",
+  REPLACEMENT_PARTIALLY_RECEIVED:
+    "Partially Delivered",
+  REPLACEMENT_RECEIVED:
+    "Received",
+};
+
+const RESTORE_PO_ACTION_LABELS = {
+  REPLACEMENT_PENDING_MANAGER:
+    "Pending Procurement Approval",
+  REPLACEMENT_PENDING_FINANCE:
+    "Pending Finance",
+  REPLACEMENT_MANAGER_REJECTED:
+    "Procurement Rejected",
+  REPLACEMENT_FINANCE_REJECTED:
+    "Finance Rejected",
+  REPLACEMENT_APPROVED:
+    "Mark as Ordered",
+  REPLACEMENT_ORDERED:
+    "Mark Delivery",
+  REPLACEMENT_PARTIALLY_RECEIVED:
+    "Record Next Delivery",
+};
   const vendorGroups = useMemo(() => {
     const groups = new Map();
 
@@ -1666,6 +1702,10 @@ const orderIsReplacement =
     .trim()
     .toUpperCase() ===
   "REPLACEMENT";
+const isReturnableRestore =
+  String(order.remarks || "")
+    .toUpperCase()
+    .includes("RETURNABLE_RESTORE_OUTWARD:");
 
 const relatedInwards =
   inwardRows.filter((inward) => {
@@ -1937,6 +1977,7 @@ const rowExpectedDelivery =
           replacementQcPassed,
           replacementQcPending,
           replacementInventoryIssued,
+          isReturnableRestore,
           sourceMrNumber,
 
           orderType: String(
@@ -4077,7 +4118,7 @@ _jsx(Link, {
       >
         {r.po}
       </Link>
-      {r.isReplacement && (
+      {r.isReplacement && !r.isReturnableRestore && (
         <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
           Replacement R{r.replacementRound || 1}
         </span>
@@ -4090,15 +4131,22 @@ _jsx(Link, {
   header: "MR ID",
   className: "text-center min-w-[190px] whitespace-nowrap",
   render: (r) => (
-    <span
-      className={
-        r.sourceMrNumber
-          ? "font-semibold text-blue-600 dark:text-blue-400"
-          : "text-slate-400"
-      }
-    >
-      {r.sourceMrNumber || "Direct PO"}
-    </span>
+    <div className="flex flex-col items-center gap-1">
+      <span
+        className={
+          r.sourceMrNumber
+            ? "font-semibold text-blue-600 dark:text-blue-400"
+            : "text-slate-400"
+        }
+      >
+        {r.sourceMrNumber || "Direct PO"}
+      </span>
+      {r.isReturnableRestore && (
+        <span className="text-[10px] font-medium text-amber-700 dark:text-amber-400">
+          Restore · QC Failed
+        </span>
+      )}
+    </div>
   ),
 },
             { key: "vendor", header: "Vendor", className: "text-center" },
@@ -4203,9 +4251,13 @@ _jsx(Link, {
 
     if (r.isReplacement) {
       let label =
-        REPLACEMENT_STATUS_LABELS[
-          normalizedStatus
-        ] ||
+        (r.isReturnableRestore
+          ? RESTORE_PO_STATUS_LABELS[
+              normalizedStatus
+            ]
+          : REPLACEMENT_STATUS_LABELS[
+              normalizedStatus
+            ]) ||
         normalizedStatus.replaceAll(
           "_",
           " "
@@ -4229,25 +4281,29 @@ _jsx(Link, {
         "REPLACEMENT_RECEIVED"
       ) {
         if (r.replacementQcFailed) {
-          label =
-            "Replacement Received - QC Failed";
+          label = r.isReturnableRestore
+            ? "Restore Received - QC Failed"
+            : "Replacement Received - QC Failed";
           lifecycleClass =
             "border-rose-200 bg-rose-50 text-rose-700";
         } else if (
           r.replacementInventoryIssued
         ) {
-          label =
-            "Replacement Received - Inventory Issued";
+          label = r.isReturnableRestore
+            ? "Restore Received - Inventory Issued"
+            : "Replacement Received - Inventory Issued";
           lifecycleClass =
             "border-indigo-200 bg-indigo-50 text-indigo-700";
         } else if (r.replacementQcPassed) {
-          label =
-            "Replacement Received - QC Passed";
+          label = r.isReturnableRestore
+            ? "Restore Received - QC Passed"
+            : "Replacement Received - QC Passed";
           lifecycleClass =
             "border-emerald-200 bg-emerald-50 text-emerald-700";
         } else {
-          label =
-            "Replacement Received - QC Pending";
+          label = r.isReturnableRestore
+            ? "Restore Received - QC Pending"
+            : "Replacement Received - QC Pending";
           lifecycleClass =
             "border-amber-200 bg-amber-50 text-amber-700";
         }
@@ -4374,7 +4430,9 @@ _jsx(Link, {
         if (r.replacementQcFailed) {
           presentation = {
             label:
-              "Replacement Received - QC Failed",
+              r.isReturnableRestore
+                ? "Restore Received - QC Failed"
+                : "Replacement Received - QC Failed",
             actionClass:
               "border-rose-600 bg-rose-600 text-white",
           };
@@ -4383,25 +4441,44 @@ _jsx(Link, {
         ) {
           presentation = {
             label:
-              "Replacement Received - Inventory Issued",
+              r.isReturnableRestore
+                ? "Restore Received - Inventory Issued"
+                : "Replacement Received - Inventory Issued",
             actionClass:
               "border-indigo-600 bg-indigo-600 text-white",
           };
         } else if (r.replacementQcPassed) {
           presentation = {
             label:
-              "Replacement Received - QC Passed",
+              r.isReturnableRestore
+                ? "Restore Received - QC Passed"
+                : "Replacement Received - QC Passed",
             actionClass:
               "border-emerald-600 bg-emerald-600 text-white",
           };
         } else {
           presentation = {
             label:
-              "Replacement Received - QC Pending",
+              r.isReturnableRestore
+                ? "Restore Received - QC Pending"
+                : "Replacement Received - QC Pending",
             actionClass:
               "border-amber-500 bg-amber-500 text-white",
           };
         }
+      }
+
+      if (
+        r.isReturnableRestore &&
+        normalizedStatus !== "REPLACEMENT_RECEIVED"
+      ) {
+        presentation = {
+          ...presentation,
+          label:
+            RESTORE_PO_ACTION_LABELS[
+              normalizedStatus
+            ] || presentation.label,
+        };
       }
 
       if (

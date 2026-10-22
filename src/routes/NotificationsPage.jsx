@@ -430,6 +430,173 @@ const getScrapRequesterName = (
   return "-";
 };
 
+const formatScrapTableRemarks = (
+  rawRemarks = "",
+  scrapMetadata = {},
+  damagedItems = [],
+) => {
+  const raw = String(rawRemarks || "").trim();
+
+  const parseSerialRemark = (value) => {
+    if (value && typeof value === "object") {
+      const serial = String(
+        value?.serial_number ||
+          value?.serialNumber ||
+          value?.unit_serial_number ||
+          value?.serial_no ||
+          value?.serial ||
+          "",
+      ).trim();
+      const remark = String(
+        value?.remarks ||
+          value?.remark ||
+          value?.qc_remark ||
+          value?.qcRemarks ||
+          value?.comment ||
+          "",
+      ).trim();
+      const unit = value?.unit_index
+        ? `Unit ${value.unit_index}`
+        : "";
+      const identifier = serial || unit;
+      return identifier && remark
+        ? [identifier, remark]
+            .filter(Boolean)
+            .join(" - ")
+        : "";
+    }
+
+    const text = String(value || "").trim();
+    if (!text) return "";
+
+    const bracketedSerial = text.match(
+      /\[([^\]]+)\]\s*:\s*([^|;\r\n]*)/,
+    );
+    if (bracketedSerial) {
+      const serial = String(bracketedSerial[1] || "").trim();
+      const remark = String(bracketedSerial[2] || "").trim();
+      return serial
+        ? [serial, remark]
+            .filter(Boolean)
+            .join(" - ")
+        : "";
+    }
+
+    // Also accept saved remarks already written as "SERIAL - remark".
+    const plainSerial = text.match(
+      /\b([A-Z0-9][A-Z0-9_-]*S\d{3,})\s*(?:-|:)\s*([^|;\r\n]*)/i,
+    );
+    if (!plainSerial) return "";
+
+    const serial = String(plainSerial[1] || "").trim();
+    const remark = String(plainSerial[2] || "").trim();
+    return serial
+      ? [serial, remark]
+          .filter(Boolean)
+          .join(" - ")
+      : "";
+  };
+
+  const serialRemarkLines = damagedItems.flatMap(
+    (item) =>
+      Array.isArray(item?.qc_items)
+        ? item.qc_items
+            .map(parseSerialRemark)
+            .filter(Boolean)
+        : [],
+  );
+
+  if (!serialRemarkLines.length) {
+    const savedQcRemarks = Array.isArray(
+      scrapMetadata?.qc_failure_remarks,
+    )
+      ? scrapMetadata.qc_failure_remarks
+          .map(parseSerialRemark)
+          .filter(Boolean)
+      : [];
+    serialRemarkLines.push(...savedQcRemarks);
+  }
+
+  if (!serialRemarkLines.length) {
+    const qcRemarkText = raw.match(
+      /(?:NOT OK\s+)?Remarks\s*:\s*([\s\S]*)$/i,
+    )?.[1];
+    if (qcRemarkText) {
+      serialRemarkLines.push(
+        ...qcRemarkText
+          .split(/\s*\|\s*/)
+          .map(parseSerialRemark)
+          .filter(Boolean),
+      );
+    }
+  }
+
+  const uniqueSerialRemarkLines = Array.from(
+    new Set(serialRemarkLines),
+  );
+
+  const headerMatch = raw.match(
+    /^(.+?)(?:\s+-\s+MR-[^\s.]+)?\.\s*(?:NOT OK\s+)?Remarks\s*:/i,
+  );
+  let summary = String(headerMatch?.[1] || "").trim();
+
+  if (!summary && scrapMetadata?.assembly_return) {
+    const requestType = String(
+      scrapMetadata?.source_mr_request_type || "",
+    )
+      .trim()
+      .toUpperCase();
+    const isBom = requestType.includes("BOM");
+    const isCustomizedBom =
+      Boolean(scrapMetadata?.source_mr_customized_bom) ||
+      requestType.includes("CUSTOM");
+    const productLabel = isBom
+      ? isCustomizedBom
+        ? "Customised BOM"
+        : "BOM"
+      : "R&D";
+    summary = `${productLabel} assembly return QC Failed`;
+  }
+
+  if (
+    !summary &&
+    String(scrapMetadata?.workflow || "")
+      .toUpperCase()
+      .startsWith("RETURNABLE_")
+  ) {
+    const purpose = String(
+      scrapMetadata?.returnable_purpose_label || "",
+    ).trim();
+    summary = `Returnable${purpose ? ` ${purpose}` : ""} QC Failed`;
+  }
+
+  if (!summary) {
+    summary = String(
+      raw.split(/\s+(?:NOT OK\s+)?Remarks\s*:/i, 1)[0] || "",
+    )
+      .replace(/\s+-\s+MR-[^\s.]+\s*\.?$/i, "")
+      .replace(/\s*\.\s*$/, "")
+      .trim();
+  }
+
+  const isQcFailureRemark =
+    /(?:assembly return|QC Failed|NOT OK\s+Remarks\s*:)/i.test(raw) ||
+    Boolean(scrapMetadata?.assembly_return) ||
+    String(scrapMetadata?.workflow || "")
+      .toUpperCase()
+      .startsWith("RETURNABLE_");
+
+  // Keep ordinary Scrap notes intact, while preventing component labels or
+  // codes from leaking into QC-failure remarks when serial detail is absent.
+  if (!uniqueSerialRemarkLines.length && !isQcFailureRemark) {
+    return raw;
+  }
+
+  return [summary, ...uniqueSerialRemarkLines]
+    .filter(Boolean)
+    .join("\n");
+};
+
 
 const getLoggedInUserName = () => {
   const directName =
@@ -2608,14 +2775,18 @@ console.log(
                   ? scrapMetadata.selected_items
                   : [];
               const summarizeComponentNames = (items) =>
-                items
-                  .map((item) => {
-                    const name = item?.component_name || item?.label || item?.component_code || "Component";
-                    const quantity = Number(item?.quantity || item?.serial_numbers?.length || 0);
-                    return `${name}-${quantity}`;
-                  })
-                  .filter(Boolean)
-                  .join(", ");
+                Array.from(
+                  new Set(
+                    items
+                      .map((item) =>
+                        item?.component_name ||
+                        item?.label ||
+                        item?.component_code ||
+                        "Component",
+                      )
+                      .filter(Boolean),
+                  ),
+                ).join(", ");
               const summarizeQuantity = (items) =>
                 items.reduce(
                   (total, item) => total + Number(item?.quantity || item?.serial_numbers?.length || 0),
@@ -2641,6 +2812,19 @@ console.log(
                         .map((serial) => ({ serial, componentName }))
                     : [];
                 });
+              const rawScrapRemarks =
+                outward?.remarks ||
+                (
+                  /waiting for manager approval/i.test(
+                    String(
+                      notification?.message ||
+                        "",
+                    ),
+                  )
+                    ? ""
+                    : notification?.message
+                ) ||
+                "";
 
               return {
                 ...notification,
@@ -2734,19 +2918,13 @@ console.log(
                   notification?.created_at ||
                   "",
 
-                scrapRemarks:
-                  outward?.remarks ||
-                  (
-                    /waiting for manager approval/i.test(
-                      String(
-                        notification?.message ||
-                          "",
-                      ),
-                    )
-                      ? ""
-                      : notification?.message
-                  ) ||
-                  "",
+                scrapTableRemarks:
+                  formatScrapTableRemarks(
+                    rawScrapRemarks,
+                    scrapMetadata,
+                    damagedItems,
+                  ),
+                scrapRemarks: rawScrapRemarks,
 
                 type:
                   outward?.outward_type ||
@@ -3756,26 +3934,27 @@ if (isInventory) {
                 n,
               );
 
+            /*
+             * The MR required_quantity field is only a drone count for BOM
+             * requests. For R&D it stores the summed component quantities,
+             * which must not be shown as a Drone Qty notification value.
+             */
             const droneQuantity =
-              mr.drone_quantity ??
-              mr.droneQuantity ??
-              mr.no_of_drones ??
-              mr.noOfDrones ??
-              mr.required_quantity ??
-              mr.requiredQuantity ??
-              mr.requested_quantity ??
-              mr.requestedQuantity ??
-              mr.quantity ??
-              n.drone_quantity ??
-              n.droneQuantity ??
-              n.no_of_drones ??
-              n.noOfDrones ??
-              n.required_quantity ??
-              n.requiredQuantity ??
-              n.requested_quantity ??
-              n.requestedQuantity ??
-              n.quantity ??
-              0;
+              String(requestType || "").trim().toUpperCase() === "BOM"
+                ? mr.required_quantity ??
+                  mr.requiredQuantity ??
+                  mr.drone_quantity ??
+                  mr.droneQuantity ??
+                  mr.no_of_drones ??
+                  mr.noOfDrones ??
+                  n.required_quantity ??
+                  n.requiredQuantity ??
+                  n.drone_quantity ??
+                  n.droneQuantity ??
+                  n.no_of_drones ??
+                  n.noOfDrones ??
+                  0
+                : 0;
 
             const requiredDate =
               mr.required_date ||
@@ -4416,6 +4595,114 @@ const handleScrapDecision = async (
         ),
       },
     );
+
+    if (
+      normalizedDecision === "APPROVED" &&
+      normalizedReorderChoice === "YES" &&
+      isAssemblyReturnScrap(latestOutward)
+    ) {
+      const procurementReference = `OUTWARD:${outwardId}`;
+
+      try {
+        const procurementNotificationPayload =
+          await fetchAuthenticatedJson(
+            `${config.baseURL}/notifications/?category=QC_FAILED&receiver=PROCUREMENT&reference_id=${encodeURIComponent(
+              procurementReference,
+            )}&page_size=200`,
+            { cache: "no-store" },
+          );
+        const procurementNotifications =
+          unwrapManagerApiList(
+            procurementNotificationPayload,
+          );
+        const alreadyNotified =
+          procurementNotifications.some(
+            (item) =>
+              String(item?.receiver || "")
+                .trim()
+                .toUpperCase() === "PROCUREMENT" &&
+              String(item?.category || "")
+                .trim()
+                .toUpperCase() === "QC_FAILED" &&
+              String(
+                item?.reference_id ??
+                  item?.referenceId ??
+                  "",
+              ) === procurementReference,
+          );
+
+        if (!alreadyNotified) {
+          await fetchAuthenticatedJson(
+            `${config.baseURL}/notifications/`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                category: "QC_FAILED",
+                title: `ASSEMBLY RESTORE REQUIRED - ${latestOutward?.material_request_number || latestOutward?.source_mr_number || outwardId}`,
+                message:
+                  "Manager approved Restore for the QC-failed Assembly components. Procurement must prepare and raise the Restore purchase order for Finance approval.",
+                reference_id: procurementReference,
+                status: "PENDING_PROCUREMENT",
+                receiver: "PROCUREMENT",
+                is_read: false,
+              }),
+            },
+          );
+        }
+
+        const financeNotificationPayload =
+          await fetchAuthenticatedJson(
+            `${config.baseURL}/notifications/?category=SCRAP&receiver=FINANCE&reference_id=${encodeURIComponent(
+              outwardId,
+            )}&page_size=200`,
+            { cache: "no-store" },
+          );
+        const pendingFinanceNotifications =
+          unwrapManagerApiList(
+            financeNotificationPayload,
+          ).filter(
+            (item) =>
+              String(item?.receiver || "")
+                .trim()
+                .toUpperCase() === "FINANCE" &&
+              String(item?.category || "")
+                .trim()
+                .toUpperCase() === "SCRAP" &&
+              String(
+                item?.reference_id ??
+                  item?.referenceId ??
+                  "",
+              ) === String(outwardId) &&
+              String(item?.status || "")
+                .trim()
+                .toUpperCase() === "PENDING_FINANCE",
+          );
+
+        await Promise.all(
+          pendingFinanceNotifications.map(
+            (item) =>
+              fetchAuthenticatedJson(
+                `${config.baseURL}/notifications/${encodeURIComponent(
+                  item.id,
+                )}/`,
+                {
+                  method: "PATCH",
+                  body: JSON.stringify({
+                    status: "MANAGER_APPROVED",
+                    is_read: true,
+                  }),
+                },
+              ),
+          ),
+        );
+      } catch (notificationError) {
+        throw new Error(
+          `Manager approved Restore, but the Procurement notification could not be completed. Refresh and verify this item before retrying. ${
+            notificationError?.message || ""
+          }`.trim(),
+        );
+      }
+    }
 
     /*
      * Backend is the approval authority and also updates the Manager
@@ -6178,9 +6465,62 @@ if (isInventory) {
       .trim()
       .toUpperCase();
 
+  const isAssemblyReturnScrap = (row = {}) => {
+    const metadata =
+      row?.scrapMetadata ||
+      row?.inventory_allocations ||
+      {};
+    const workflow = String(metadata?.workflow || "")
+      .trim()
+      .toUpperCase();
+    const source = String(
+      metadata?.source ||
+        row?.source ||
+        row?.scrap_source ||
+        "",
+    )
+      .trim()
+      .toUpperCase();
+    const requestType = String(
+      metadata?.request_type ||
+        metadata?.material_request_type ||
+        row?.request_type ||
+        row?.material_request_type ||
+        "",
+    )
+      .trim()
+      .toUpperCase();
+
+    return (
+      workflow.includes("ASSEMBLY") ||
+      workflow === "RETURNABLE_COMPONENT_QC_V1" ||
+      source === "ASSEMBLY_MR" ||
+      ["BOM", "CUSTOM_BOM", "R&D", "RD"].includes(requestType)
+    );
+  };
+
   const getManagerScrapSourceLabel = (row = {}) => {
     const workflow =
       getReturnableScrapWorkflow(row);
+    if (isAssemblyReturnScrap(row)) {
+      const requestType = String(
+        row?.scrapMetadata?.request_type ||
+          row?.scrapMetadata?.material_request_type ||
+          row?.request_type ||
+          row?.material_request_type ||
+          "",
+      )
+        .trim()
+        .toUpperCase();
+      const label =
+        requestType === "CUSTOM_BOM"
+          ? "Customised BOM"
+          : ["R&D", "RD"].includes(requestType)
+            ? "R&D"
+            : "BOM";
+
+      return `Assembly - ${label}`;
+    }
 
     if (
       [
@@ -6215,6 +6555,20 @@ if (isInventory) {
     const workflow =
       getReturnableScrapWorkflow(row);
 
+    if (isAssemblyReturnScrap(row)) {
+      return {
+        title: "Restore Failed Assembly Components?",
+        description:
+          "Inventory marked one or more returned BOM, Customised BOM, or R&D components as QC Failed. Choose Restore to raise a PO for only those failed components, or Final Scrap to dispose of them.",
+        yesTitle: "Restore",
+        yesDescription:
+          "Procurement will enter vendor, unit price, GST, and delivery details to raise a PO for the failed components only. The PO then goes to Finance for approval; no new Material Request is created.",
+        noTitle: "Final Scrap",
+        noDescription:
+          "Send Final Scrap to Finance for approval. After approval, the component will be listed in both Failed QC as Final Scrap (without actions) and Outward → Scrap.",
+      };
+    }
+
     if (
       workflow ===
       "RETURNABLE_COMPONENT_QC_V1"
@@ -6225,13 +6579,13 @@ if (isInventory) {
         description:
           "Inventory marked this returned component NOT OK. Choose Reorder YES or NO.",
         yesTitle:
-          "YES — Restore / Replace",
+          "YES — Restore Failed Components",
         yesDescription:
-          "Record REBUILD / REORDER for Finance approval. Only after Finance approves will the PR/FR be created. GOOD serials stay pre-fulfilled in that child MR; only missing quantity is checked against In Store, and Procurement receives only the remaining shortage.",
+          "Send only the QC-failed component quantities to Procurement for a Restore PO. Finance approves the PO; this does not create another Material Request.",
         noTitle:
           "NO — Final Scrap",
         noDescription:
-          "Send the Scrap / Do Not Rebuild decision to Finance. After Finance approves, GOOD serials return to In Store and BAD serials remain in Failed QC with Restore action.",
+          "Send the Scrap / Do Not Rebuild decision to Finance. After Finance approves, GOOD serials return to In Store and BAD serials move to the Scrap tab.",
       };
     }
 
@@ -6251,7 +6605,7 @@ if (isInventory) {
         noTitle:
           "NO — Final Scrap",
         noDescription:
-          "Send the Scrap / Do Not Rebuild decision to Finance. No rebuild MR is created. After Finance approves, GOOD serials move back to In Store and BAD serials remain Failed QC with Restore action.",
+          "Send the Scrap / Do Not Rebuild decision to Finance. No rebuild MR is created. After Finance approves, GOOD serials move back to In Store and BAD serials move to the Scrap tab.",
       };
     }
 
@@ -7768,8 +8122,7 @@ transition-all
         isManager && (
         <>
           <div className="w-full">
-            <div className="w-full">
-              <div className="grid grid-cols-[0.34fr_0.72fr_1.15fr_0.45fr_1.15fr_0.45fr_0.58fr_0.85fr_0.68fr_1fr_0.7fr_1.55fr] bg-muted/40 text-[13px] font-bold uppercase tracking-[0.04em] px-2 py-4 text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+              <div className="grid w-full grid-cols-[3%_8%_9%_4%_9%_4%_7%_10%_6%_24%_7%_9%] bg-muted/40 px-3 py-4 text-[13px] font-bold uppercase tracking-[0.04em] text-slate-700 dark:bg-slate-800 dark:text-slate-200">
                 <div className="text-center">S.No</div>
                 <div className="text-center">Requested By</div>
                 <div className="text-center">Scrap Component</div>
@@ -7808,14 +8161,30 @@ transition-all
                     ]
                       .filter(Boolean)
                       .join(" — ");
+                    const scrapRemarksText =
+                      n.scrapTableRemarks ||
+                      n.scrapRemarks ||
+                      n.remarks ||
+                      (
+                        /waiting for manager approval/i.test(
+                          String(n.message || ""),
+                        )
+                          ? ""
+                          : n.message
+                      ) ||
+                      "-";
+                    const scrapRemarkLines = String(scrapRemarksText)
+                      .split(/\r?\n/)
+                      .map((line) => line.trim())
+                      .filter(Boolean);
 
                     return (
                       <div
                         key={n.id}
-                        className="grid grid-cols-[0.34fr_0.72fr_1.15fr_0.45fr_1.15fr_0.45fr_0.58fr_0.85fr_0.68fr_1fr_0.7fr_1.55fr] px-2 py-5 items-center text-[15px] leading-6 hover:bg-muted/50 transition-colors dark:hover:bg-slate-800"
+                        className="grid w-full grid-cols-[3%_8%_9%_4%_9%_4%_7%_10%_6%_24%_7%_9%] items-center px-3 py-5 text-[15px] leading-6 transition-colors hover:bg-muted/30 dark:hover:bg-slate-800"
                       >
-                        <div className="text-center font-semibold">{index + 1}</div>
-                        <div className="text-center text-[15px] font-medium">
+                        <div className="min-w-0 text-center font-semibold">{index + 1}</div>
+                        <div className="min-w-0 break-words px-2 text-center text-[15px] font-medium">
                           {cleanScrapRequesterName(
                             n.requestedBy ||
                               n.requested_by ||
@@ -7826,11 +8195,10 @@ transition-all
                         </div>
 
                         <div
-                          className="text-center px-1 text-[14px] font-medium leading-4 text-slate-800 dark:text-slate-100 break-words"
+                          className="min-w-0 break-words px-2 text-center text-[14px]"
                           title={n.scrapComponentNames || componentLabel || ""}
                         >
-                          {n.scrapComponentNames || componentLabel ||
-                            "-"}
+                          {n.scrapComponentNames || componentLabel || "-"}
                         </div>
 
                         <div className="flex justify-center">
@@ -7846,14 +8214,14 @@ transition-all
                                     : serials,
                               })
                             }
-                            className="inline-flex min-w-10 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[15px] font-bold text-rose-700 transition hover:bg-rose-100 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300 dark:hover:bg-rose-950/50"
+                            className="inline-flex min-w-10 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[14px] font-semibold text-rose-700 transition hover:bg-rose-100 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300 dark:hover:bg-rose-950/50"
                             title="Click to view all serial numbers"
                           >
                             {Number(n.scrapQuantity ?? n.quantity ?? 0)}
                           </button>
                         </div>
 
-                        <div className="px-1 text-center text-[14px] font-medium leading-4 break-words" title={n.goodComponentNames || ""}>
+                        <div className="min-w-0 break-words px-2 text-center text-[14px]" title={n.goodComponentNames || ""}>
                           {n.goodComponentNames || "-"}
                         </div>
 
@@ -7870,25 +8238,22 @@ transition-all
                                     : [],
                               })
                             }
-                            className="inline-flex min-w-10 items-center justify-center rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[15px] font-bold text-emerald-700 transition hover:bg-emerald-100 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300 dark:hover:bg-emerald-950/50"
+                            className="inline-flex min-w-10 items-center justify-center rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[14px] font-semibold text-emerald-700 transition hover:bg-emerald-100 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300 dark:hover:bg-emerald-950/50"
                             title="Click to view all good/reusable serial numbers"
                           >
                             {Number(n.goodQuantity || 0)}
                           </button>
                         </div>
 
-                        <div className="text-center text-[14px] font-medium">
-                          {getManagerScrapSourceLabel(
-                            n,
-                          )}
+                        <div className="min-w-0 break-words px-2 text-center text-[14px]">
+                          {getManagerScrapSourceLabel(n)}
                         </div>
 
-                        <div className="text-center text-[14px] font-medium">
-                          {n.materialRequestNumber ||
-                            "-"}
+                        <div className="min-w-0 break-words px-2 text-center text-[14px] font-medium">
+                          {n.materialRequestNumber || "-"}
                         </div>
 
-                        <div className="text-center text-[15px]">
+                        <div className="min-w-0 break-words px-1 text-center text-[14px]">
                           {n.scrapDate ||
                           n.date ||
                           n.created_at
@@ -7896,36 +8261,35 @@ transition-all
                                 n.scrapDate ||
                                   n.date ||
                                   n.created_at,
-                              ).toLocaleDateString(
-                                "en-IN",
-                              )
+                              ).toLocaleDateString("en-IN")
                             : "-"}
                         </div>
 
                         <div
-                          className="text-center text-[14px] text-muted-foreground px-1 break-words"
-                          title={
-                            n.scrapRemarks ||
-                            n.remarks ||
-                            ""
-                          }
+                          className="min-w-0 break-words px-2 text-left text-[14px] leading-5"
+                          title={scrapRemarksText === "-" ? "" : scrapRemarksText}
                         >
-                          {n.scrapRemarks ||
-                            n.remarks ||
-                            (
-                              /waiting for manager approval/i.test(
-                                String(
-                                  n.message ||
-                                    "",
-                                ),
-                              )
-                                ? ""
-                                : n.message
-                            ) ||
-                            "-"}
+                          {scrapRemarkLines.length ? (
+                            <div className="space-y-0.5">
+                              {scrapRemarkLines.map((line, lineIndex) => (
+                                <div
+                                  key={`${n.id}-scrap-remark-${lineIndex}`}
+                                  className={
+                                    lineIndex === 0
+                                      ? "font-semibold text-slate-800 dark:text-slate-100"
+                                      : "text-muted-foreground"
+                                  }
+                                >
+                                  {line}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            "-"
+                          )}
                         </div>
 
-                        <div className="text-center">
+                        <div className="flex min-w-0 justify-center">
                           <button
                             type="button"
                             onClick={() => {
@@ -7959,7 +8323,7 @@ transition-all
                           </button>
                         </div>
 
-                        <div className="flex items-center justify-center gap-1 whitespace-nowrap flex-nowrap px-1">
+                        <div className="flex min-w-0 flex-wrap items-center justify-center gap-1.5 px-1">
                           {(
                             [
                               "REQUESTED",
@@ -7988,7 +8352,7 @@ transition-all
                                       "",
                                   )
                                 }
-                                className="px-2 py-1 text-[12px] leading-4 rounded-md bg-green-600 hover:bg-green-700 text-white font-medium whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-600 dark:hover:bg-emerald-700"
+                                className="rounded-lg bg-green-600 px-3 py-2 text-[14px] font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-600 dark:hover:bg-emerald-700"
                               >
                                 {String(
                                   processingScrapId ||
@@ -8010,7 +8374,7 @@ transition-all
                                     "REJECTED",
                                   )
                                 }
-                                className="px-2 py-1 text-[12px] leading-4 rounded-md bg-red-600 hover:bg-red-700 text-white font-medium whitespace-nowrap dark:bg-rose-600 dark:hover:bg-rose-700"
+                                className="rounded-lg bg-red-600 px-3 py-2 text-[14px] font-semibold text-white hover:bg-red-700 dark:bg-rose-600 dark:hover:bg-rose-700"
                               >
                                 Manager Reject
                               </button>
@@ -8036,7 +8400,7 @@ transition-all
                                   n.id,
                                 )
                               }
-                              className="rounded-md bg-slate-200 px-2 py-1 text-[12px] leading-4 font-medium whitespace-nowrap text-slate-800 transition hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600"
+                              className="rounded-lg bg-gray-200 px-3 py-2 text-[14px] font-medium text-slate-800 hover:bg-gray-300 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600"
                             >
                               Remove
                             </button>
@@ -8048,7 +8412,6 @@ transition-all
                 )}
               </div>
             </div>
-          </div>
         </>
       )}
     </div>

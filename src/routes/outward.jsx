@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { PageShell, PageHeader } from "@/components/app/PageShell";
 import { DataTable, StatusBadge } from "@/components/app/DataTable";
 import { outward as mockOutward } from "@/lib/mock-data";
@@ -29,6 +29,48 @@ const OUTWARD_TYPE_API = {
 };
 
 const DELETED_OUTWARD_ROW_IDS_STORAGE_KEY = "dream-to-life-outward-deleted-ids";
+
+async function fetchAllOutwardResults(initialUrl, options = {}) {
+  const allRows = [];
+  const visitedUrls = new Set();
+  let nextUrl = String(initialUrl || "").trim();
+
+  while (nextUrl) {
+    if (visitedUrls.has(nextUrl)) {
+      console.warn("Outward pagination loop stopped:", nextUrl);
+      break;
+    }
+    visitedUrls.add(nextUrl);
+
+    const payload = await fetchAuthenticatedJson(nextUrl, options);
+    if (Array.isArray(payload)) {
+      allRows.push(...payload);
+      break;
+    }
+
+    const pageRows = [
+      payload?.results,
+      payload?.items,
+      Array.isArray(payload?.data) ? payload.data : null,
+      payload?.rows,
+      payload?.data?.results,
+      payload?.data?.items,
+      payload?.data?.rows,
+    ].find(Array.isArray) || [];
+
+    allRows.push(...pageRows);
+    const next = payload?.next || payload?.data?.next || "";
+    if (!next) break;
+
+    try {
+      nextUrl = new URL(String(next), nextUrl).toString();
+    } catch (_error) {
+      nextUrl = String(next);
+    }
+  }
+
+  return allRows;
+}
 
 function getDeletedOutwardRowIds() {
   if (typeof window === "undefined") return [];
@@ -94,6 +136,8 @@ function normalizeTypeOfOutwardApi(value) {
 }
 
 function isQcFailedItem(item) {
+  if (isFinanceApprovedFinalScrap(item)) return false;
+
   const status = String(item.status || item.status_of_outward || "")
     .trim()
     .toLowerCase();
@@ -110,6 +154,58 @@ function isQcFailedItem(item) {
     customer.includes("qc scrap") ||
     customer.includes("failed qc")
   );
+}
+
+function isFinanceApprovedFinalScrap(item = {}) {
+  const metadata = getOutwardAllocationMetadata(item);
+  const managerDecision = String(
+    metadata.manager_disposition_decision || metadata.reorder_choice || "",
+  )
+    .trim()
+    .toUpperCase();
+  const approvedStatuses = [
+    item.approval_status,
+    item.approvalStatus,
+    item.status,
+    metadata.finance_approval_status,
+  ]
+    .map((value) =>
+      String(value || "")
+        .trim()
+        .toUpperCase()
+        .replace(/[\s-]+/g, "_"),
+    )
+    .filter(Boolean);
+
+  return (
+    isReturnableQcWorkflow(item) &&
+    managerDecision === "NO" &&
+    approvedStatuses.some((status) =>
+      ["APPROVED", "FINANCE_APPROVED"].includes(status),
+    )
+  );
+}
+
+function isFinalScrapDecision(item = {}) {
+  const metadata = getOutwardAllocationMetadata(item);
+  const decision = String(
+    metadata.manager_disposition_decision || metadata.reorder_choice || "",
+  )
+    .trim()
+    .toUpperCase();
+
+  return isReturnableQcWorkflow(item) && decision === "NO";
+}
+
+function hasManagerDispositionForReturnableQc(item = {}) {
+  if (!isReturnableQcWorkflow(item)) return false;
+  const metadata = getOutwardAllocationMetadata(item);
+  const decision = String(
+    metadata.manager_disposition_decision || metadata.reorder_choice || "",
+  )
+    .trim()
+    .toUpperCase();
+  return decision === "YES" || decision === "NO";
 }
 
 function getQcFailedRows(entry) {
@@ -139,18 +235,74 @@ function formatQcRemarks(value) {
     : raw;
 
   const entries = details
-    .split(/\s*\|\s*/)
+    .split(/\s*\|\s*|\r?\n/)
     .map((entry) => {
-      const match = entry.match(/\[([^\]]+)\]\s*:\s*([\s\S]*)$/);
+      const match = entry.match(/^(.*?)\s*\[([^\]]+)\]\s*:\s*([\s\S]*)$/);
       if (!match) return entry.trim();
 
-      const serialNumber = match[1].trim();
-      const remark = match[2].trim() || "—";
-      return `${serialNumber} - ${remark}`;
+      const serialNumber = match[2].trim();
+      const remark = match[3].trim() || "No note provided";
+      return `${serialNumber} · ${remark}`;
     })
     .filter(Boolean);
 
-  return entries.join(", ") || raw;
+  return entries.join(" | ") || raw;
+}
+
+function RemarksTextPopup({ dialog, onClose }) {
+  if (!dialog) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-[2px]"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="outward-remarks-popup-title"
+        className="w-full max-w-xl overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              Outward remarks
+            </p>
+            <h3 id="outward-remarks-popup-title" className="mt-1 text-lg font-semibold text-foreground">
+              {dialog.title || "Remarks"}
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 rounded-full border border-border p-2 text-foreground transition hover:bg-muted"
+            aria-label="Close remarks"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+
+        <div className="max-h-[65vh] overflow-y-auto p-5">
+          <div className="whitespace-pre-wrap break-words rounded-xl border border-rose-200/70 bg-rose-50/60 p-4 text-sm leading-7 text-foreground [overflow-wrap:anywhere] dark:border-rose-900/70 dark:bg-rose-950/20">
+            {dialog.text || "-"}
+          </div>
+        </div>
+
+        <div className="flex justify-end border-t border-border px-5 py-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full border border-border px-4 py-2 text-sm font-semibold text-foreground transition hover:bg-muted"
+          >
+            Close
+          </button>
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function normalizeOutwardTypeKey(value) {
@@ -184,6 +336,17 @@ function getOutwardAllocationMetadata(row = {}) {
   }
 
   return {};
+}
+
+function isReturnableQcWorkflow(row = {}) {
+  const metadata = getOutwardAllocationMetadata(row);
+  const workflow = String(metadata.workflow || "")
+    .trim()
+    .toUpperCase();
+  return (
+    workflow === "RETURNABLE_COMPONENT_QC_V1" ||
+    workflow === "RETURNABLE_DRONE_QC_V1"
+  );
 }
 
 function sumFailedQuantity(items) {
@@ -239,7 +402,28 @@ function getOutwardFailedQuantity(row = {}, metadata = getOutwardAllocationMetad
 function getReturnableRestoreDetails(row = {}) {
   const metadata = getOutwardAllocationMetadata(row);
   const workflow = String(metadata?.workflow || "").trim().toUpperCase();
-  if (!workflow.startsWith("RETURNABLE_") || !workflow.endsWith("_QC_V1")) {
+  const source = String(
+    metadata?.source || row?.source || row?.scrap_source || "",
+  )
+    .trim()
+    .toUpperCase();
+  const requestType = String(
+    metadata?.request_type ||
+      metadata?.material_request_type ||
+      row?.request_type ||
+      row?.material_request_type ||
+      "",
+  )
+    .trim()
+    .toUpperCase();
+  const isAssemblyQcWorkflow =
+    workflow.includes("ASSEMBLY") ||
+    source === "ASSEMBLY_MR" ||
+    ["BOM", "CUSTOM_BOM", "R&D", "RD"].includes(requestType);
+  const isReturnableQcWorkflow =
+    workflow.startsWith("RETURNABLE_") && workflow.endsWith("_QC_V1");
+
+  if (!isReturnableQcWorkflow && !isAssemblyQcWorkflow) {
     return null;
   }
 
@@ -263,18 +447,59 @@ function getReturnableRestoreDetails(row = {}) {
   }
 
   if (managerDecision === "NO" || state === "NOT_REQUIRED") {
-    state = "FINAL_SCRAP";
+    if (
+      ![
+        "FINAL_SCRAP_PENDING_FINANCE",
+        "FINAL_SCRAP_COMPLETED",
+        "FINAL_SCRAP_REJECTED",
+      ].includes(state)
+    ) {
+      state = "FINAL_SCRAP";
+    }
   } else if (state === "PO_RAISED") {
     state = "RESTORE_PO_RAISED";
   }
 
+  const restorePoNumber = String(
+    metadata.restore_po_number ||
+      metadata.restorePoNumber ||
+      "",
+  ).trim();
+  const restorePoNumbers = Array.isArray(metadata.restore_po_numbers)
+    ? metadata.restore_po_numbers
+    : [];
+  const restoreAlreadyRaised =
+    Boolean(restorePoNumber || restorePoNumbers.length) ||
+    [
+      "RESTORE_PO_RAISED",
+      "RESTORE_COMPLETED",
+      "RESTORE_RECEIVED_QC_PENDING",
+      "RESTORE_PARTIALLY_RECEIVED",
+      "RESTORE_QC_FAILED",
+    ].includes(state);
+
+  if (
+    managerDecision === "YES" &&
+    !restoreAlreadyRaised &&
+    !["REJECTED", "MANAGER_REJECTED", "FINANCE_REJECTED"].includes(state)
+  ) {
+    state = "PENDING_PROCUREMENT";
+  }
+
   const labels = {
-    RESTORE_COMPLETED: "Restore Completed",
+    RESTORE_COMPLETED: "QC Passed - Returned to In Store",
     RESTORE_QC_FAILED: "Restore Received - QC Failed",
     RESTORE_RECEIVED_QC_PENDING: "Restore Received - QC Pending",
     RESTORE_PARTIALLY_RECEIVED: "Restore Partially Received",
     RESTORE_PO_RAISED: "Restore PO Raised",
     PENDING_PROCUREMENT: "Pending Procurement Restore",
+    RESTORE_PENDING_FINANCE: "Restore PO - Pending Finance",
+    RESTORE_FINANCE_APPROVED: "Restore Finance Approved",
+    RESTORE_ORDERED: "Restore PO Ordered",
+    RESTORE_FINANCE_REJECTED: "Restore Finance Rejected",
+    FINAL_SCRAP_PENDING_FINANCE: "Final Scrap - Pending Finance",
+    FINAL_SCRAP_COMPLETED: "Final Scrap Completed",
+    FINAL_SCRAP_REJECTED: "Final Scrap Rejected",
     PENDING_MANAGER: "Pending Manager Approval",
     PENDING_FINANCE: "Pending Finance Approval",
     WAITING_MANAGER_FINANCE: "Pending Manager / Finance Approval",
@@ -337,6 +562,7 @@ const getSalesApprovalStatus = (row = {}) => {
 function OutwardPage() {
   const { user } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
 
   const canManageOutward =
     canWork(user, "outward");
@@ -364,12 +590,6 @@ function OutwardPage() {
     activeRole === "engineer" ||
     activeRole === "admin";
 
-  /*
-   * Management uses Outward only for Sales approval/result visibility.
-   * It does not need Inward/QC data.
-   */
-  const shouldLoadInwardQc =
-    activeRole !== "management";
   const [outwardData, setOutwardData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -428,6 +648,7 @@ function OutwardPage() {
 
   const scrapSubmitLockRef = useRef(false);
   const [scrapRejectDetails, setScrapRejectDetails] = useState(null);
+  const [remarkPopup, setRemarkPopup] = useState(null);
 
   // MR-linked Engineer Scrap details shown when Component is clicked.
   const [scrapComponentDetails, setScrapComponentDetails] = useState(null);
@@ -883,6 +1104,65 @@ function OutwardPage() {
   ) {
     const metadata =
       getScrapDispositionMetadata(row);
+    const rawCostDetails =
+      row?.cost_details ??
+      row?.costDetails ??
+      row?.serial_cost_details ??
+      row?.serialCostDetails ??
+      [];
+    const costDetails = Array.isArray(rawCostDetails)
+      ? rawCostDetails
+      : rawCostDetails && typeof rawCostDetails === "object"
+        ? [rawCostDetails]
+        : [];
+
+    const getCostSummary = (detail) => {
+      if (!detail || typeof detail !== "object") return null;
+      const totals =
+        detail?.totals ||
+        detail?.total ||
+        {};
+      const quantity = Math.max(
+        Number(detail?.quantity ?? detail?.qty ?? 0) || 0,
+        0,
+      );
+      const rawAmount =
+        totals?.allocated_cost ??
+        totals?.allocatedCost ??
+        detail?.allocated_cost ??
+        detail?.allocatedCost ??
+        detail?.total_cost ??
+        detail?.totalCost;
+      const amount =
+        rawAmount !== undefined &&
+        rawAmount !== null &&
+        rawAmount !== "" &&
+        Number.isFinite(Number(rawAmount))
+          ? Math.max(Number(rawAmount), 0)
+          : null;
+      const unpricedQuantity = Math.min(
+        quantity,
+        Math.max(
+          Number(detail?.unpriced_quantity ?? detail?.unpricedQuantity ?? 0) || 0,
+          0,
+        ),
+      );
+      const pricedQuantity = Math.max(
+        quantity - unpricedQuantity,
+        0,
+      );
+
+      return {
+        quantity,
+        amount,
+        pricedQuantity,
+        unpricedQuantity,
+        unitPrice:
+          amount !== null && pricedQuantity > 0
+            ? amount / pricedQuantity
+            : null,
+      };
+    };
 
     const scrapItems =
       Array.isArray(
@@ -922,7 +1202,6 @@ function OutwardPage() {
             ) || 0,
             0,
           );
-
         const componentReference =
           item?.component_id ??
           item?.componentId ??
@@ -938,6 +1217,76 @@ function OutwardPage() {
               : item?.component
           );
 
+        const itemKeys = [
+          componentReference,
+          item?.component_code,
+          item?.componentCode,
+          item?.component_name,
+          item?.componentName,
+          componentName,
+        ]
+          .filter((value) => value !== undefined && value !== null && String(value).trim())
+          .map((value) => String(value).trim().toLowerCase());
+        const itemSerialSet = new Set(serialNumbers.map((serial) => String(serial).trim()));
+        const matchingCostDetails = costDetails.filter((detail) => {
+          const detailKeys = [
+            detail?.component_id,
+            detail?.componentId,
+            detail?.component_code,
+            detail?.componentCode,
+            detail?.component_name,
+            detail?.componentName,
+          ]
+            .filter((value) => value !== undefined && value !== null && String(value).trim())
+            .map((value) => String(value).trim().toLowerCase());
+          return itemKeys.some((keyValue) => detailKeys.includes(keyValue));
+        });
+        const indexedCostDetail = costDetails[index];
+        const indexedCostKeys = [
+          indexedCostDetail?.component_id,
+          indexedCostDetail?.componentId,
+          indexedCostDetail?.component_code,
+          indexedCostDetail?.componentCode,
+          indexedCostDetail?.component_name,
+          indexedCostDetail?.componentName,
+        ]
+          .filter((value) => value !== undefined && value !== null && String(value).trim())
+          .map((value) => String(value).trim().toLowerCase());
+        const indexedCostMatches = itemKeys.some((keyValue) =>
+          indexedCostKeys.includes(keyValue),
+        );
+        const costDetail =
+          matchingCostDetails.find((detail) =>
+            (Array.isArray(detail?.serials) ? detail.serials : []).some((serial) =>
+              itemSerialSet.has(String(serial?.serial_number ?? serial?.serialNumber ?? "").trim()),
+            ),
+          ) ||
+          (indexedCostMatches ? indexedCostDetail : null) ||
+          matchingCostDetails[0] ||
+          (costDetails.length === 1 ? costDetails[0] : null);
+        const costSummary = getCostSummary(costDetail);
+        const rawUnitPrice =
+          costSummary?.unitPrice ??
+          item?.unit_price ??
+          item?.unitPrice ??
+          item?.unit_cost ??
+          item?.unitCost ??
+          item?.price ??
+          row?.unit_price ??
+          row?.unitPrice ??
+          row?.unit_cost ??
+          row?.unitCost ??
+          row?.price;
+        const unitPrice = Number(rawUnitPrice);
+        const rawLineAmount =
+          costSummary?.amount ??
+          item?.total_price ??
+          item?.totalPrice ??
+          item?.amount ??
+          item?.total_cost ??
+          item?.totalCost;
+        const lineAmount = Number(rawLineAmount);
+
         const key = String(
           componentReference ||
             componentName ||
@@ -952,9 +1301,44 @@ function OutwardPage() {
               componentName || "-",
             quantity: 0,
             serialNumbers: [],
+            unitPrice: null,
+            amount: 0,
+            pricedQuantity: 0,
+            unpricedQuantity: 0,
           };
 
         existing.quantity += quantity;
+        const hasDirectUnitPrice =
+          rawUnitPrice !== undefined &&
+          rawUnitPrice !== null &&
+          rawUnitPrice !== "" &&
+          Number.isFinite(unitPrice) &&
+          unitPrice >= 0;
+        const itemPricedQuantity = costSummary?.pricedQuantity > 0
+          ? Math.min(quantity, costSummary.pricedQuantity)
+          : hasDirectUnitPrice
+            ? quantity
+            : 0;
+        const hasKnownAmount =
+          Number.isFinite(lineAmount) &&
+          lineAmount >= 0 &&
+          (costSummary?.amount !== null || hasDirectUnitPrice);
+
+        if (hasKnownAmount || hasDirectUnitPrice) {
+          existing.amount +=
+            hasKnownAmount
+              ? lineAmount
+              : unitPrice * quantity;
+          existing.pricedQuantity += itemPricedQuantity;
+          existing.unitPrice =
+            existing.pricedQuantity > 0
+              ? existing.amount / existing.pricedQuantity
+              : unitPrice;
+        }
+        existing.unpricedQuantity += Math.max(
+          quantity - itemPricedQuantity,
+          0,
+        );
         existing.serialNumbers =
           Array.from(
             new Set([
@@ -989,6 +1373,33 @@ function OutwardPage() {
           row?.serialNumbers ??
           [],
       );
+    const fallbackQuantity =
+      fallbackSerials.length ||
+      Math.max(
+        Number(
+          row?.qty ??
+            row?.quantity ??
+            row?.no_of_components ??
+            row?.noOfComponents ??
+            0,
+        ) || 0,
+        0,
+      );
+    const fallbackCostSummary = getCostSummary(costDetails[0]);
+    const fallbackUnitPriceRaw =
+      fallbackCostSummary?.unitPrice ??
+      row?.unit_price ??
+      row?.unitPrice ??
+      row?.unit_cost ??
+      row?.unitCost ??
+      row?.price;
+    const fallbackUnitPrice =
+      fallbackUnitPriceRaw !== undefined &&
+      fallbackUnitPriceRaw !== null &&
+      fallbackUnitPriceRaw !== "" &&
+      Number.isFinite(Number(fallbackUnitPriceRaw))
+        ? Number(fallbackUnitPriceRaw)
+        : null;
 
     return [
       {
@@ -996,20 +1407,21 @@ function OutwardPage() {
           getScrapComponentNameOnly(
             row,
           ),
-        quantity:
-          fallbackSerials.length ||
-          Math.max(
-            Number(
-              row?.qty ??
-                row?.quantity ??
-                row?.no_of_components ??
-                row?.noOfComponents ??
-                0,
-            ) || 0,
-            0,
-          ),
+        quantity: fallbackQuantity,
         serialNumbers:
           fallbackSerials,
+        unitPrice: fallbackUnitPrice,
+        amount: fallbackCostSummary?.amount ?? (
+          fallbackUnitPrice === null
+            ? null
+            : fallbackUnitPrice * fallbackQuantity
+        ),
+        pricedQuantity:
+          fallbackCostSummary?.pricedQuantity ??
+          (fallbackUnitPrice === null ? 0 : fallbackQuantity),
+        unpricedQuantity:
+          fallbackCostSummary?.unpricedQuantity ??
+          (fallbackUnitPrice === null ? fallbackQuantity : 0),
       },
     ];
   }
@@ -1375,6 +1787,22 @@ function OutwardPage() {
           ),
         0,
       );
+    const groupedAmount = componentGroups.reduce(
+      (total, group) =>
+        total +
+        (group?.pricedQuantity > 0 && Number.isFinite(Number(group?.amount))
+          ? Number(group.amount)
+          : 0),
+      0,
+    );
+    const unpricedQuantity = componentGroups.reduce(
+      (total, group) =>
+        total + Math.max(Number(group?.unpricedQuantity || 0), 0),
+      0,
+    );
+    const hasComponentPrice = componentGroups.some(
+      (group) => group?.pricedQuantity > 0,
+    );
 
     setScrapComponentDetails({
       componentGroups,
@@ -1419,6 +1847,9 @@ function OutwardPage() {
             0,
         ) ||
         0,
+      totalComponentAmount: groupedAmount,
+      unpricedQuantity,
+      hasComponentPrice,
     });
   }
 
@@ -1459,9 +1890,11 @@ function OutwardPage() {
   item.typeOfOutward ||
   typeOfOutward
 );
-    const normalizedType = isQcFailedItem(item)
-      ? "failedQc"
-      : type;
+    const normalizedType = hasManagerDispositionForReturnableQc(item)
+      ? "scrap"
+      : isQcFailedItem(item)
+        ? "failedQc"
+        : type;
     const failedQty = getOutwardFailedQuantity(
       item,
       allocationMetadata,
@@ -1610,6 +2043,21 @@ function OutwardPage() {
     return inwardEntries.flatMap((entry) => {
       const failedRows = getQcFailedRows(entry);
       if (!failedRows.length) return [];
+      const refundStatuses = failedRows
+        .map((row) =>
+          String(row?.refund_status || "")
+            .trim()
+            .toUpperCase()
+        )
+        .filter(Boolean);
+      const refundStatus = [
+        "REFUNDED",
+        "PENDING_FINANCE",
+        "PENDING_PROCUREMENT",
+        "FINANCE_REJECTED",
+      ].find((status) =>
+        refundStatuses.includes(status)
+      ) || "";
 
       const receivedDate =
         entry.received_date ||
@@ -1734,9 +2182,14 @@ function OutwardPage() {
             entry.source_mr_number ||
             entry.material_request_number ||
             "",
+          isReturnableRestore: Boolean(
+            entry.is_returnable_restore ||
+              entry.isReturnableRestore
+          ),
           qcFailedAction:
             entry.qc_failed_action ||
             "NONE",
+          refundStatus,
           replacementPurchaseOrderId:
             entry.replacement_purchase_order?.id ||
             entry.replacement_purchase_order ||
@@ -1779,6 +2232,12 @@ function OutwardPage() {
   }
 
   function getFailedQcWorkflowLabel(row) {
+    if (isFinalScrapDecision(row)) {
+      return isFinanceApprovedFinalScrap(row)
+        ? "Final Scrap"
+        : "Final Scrap - Pending Finance";
+    }
+
     const restoreDetails = getReturnableRestoreDetails(row);
     if (restoreDetails) {
       return restoreDetails.label;
@@ -1956,10 +2415,12 @@ function OutwardPage() {
         row?.sourceMrNumber || ""
       ).trim()
     );
+    const canRefund =
+      !hasMr || row?.isReturnableRestore;
 
     if (
       !inwardEntryId ||
-      hasMr ||
+      !canRefund ||
       !canRequestReplacement
     ) {
       return;
@@ -2009,14 +2470,6 @@ function OutwardPage() {
           }
         );
 
-      /*
-       * IMPORTANT:
-       * Do NOT disable Refund/Replacement merely because the Refund
-       * popup was opened.
-       *
-       * Only after the backend confirms OK/success do we change the
-       * row to RETURN_REQUESTED (= Refund Completed).
-       */
       setOutwardData((previous) =>
         previous.map((item) => {
           if (
@@ -2030,11 +2483,9 @@ function OutwardPage() {
 
           return {
             ...item,
-            qcFailedAction:
-              "RETURN_REQUESTED",
-            qc_failed_action:
-              "RETURN_REQUESTED",
-            refundCompleted: true,
+            refundStatus:
+              result?.status ||
+              "PENDING_PROCUREMENT",
             refundResult:
               result?.refund || null,
           };
@@ -2068,7 +2519,7 @@ function OutwardPage() {
       );
     } catch (error) {
       console.error(
-        "Failed to process Direct PO refund:",
+        "Failed to request QC refund:",
         error
       );
 
@@ -2110,8 +2561,8 @@ function OutwardPage() {
         inwardEntries,
         engineerScrapRows,
       ] = await Promise.all([
-        fetchAuthenticatedJson(
-          `${config.baseURL}/outward/`,
+        fetchAllOutwardResults(
+          `${config.baseURL}/outward/?paginate=1&page_size=100&summary=1`,
         ).catch((error) => {
           console.warn(
             "Outward API unavailable:",
@@ -2119,17 +2570,15 @@ function OutwardPage() {
           );
           return null;
         }),
-        shouldLoadInwardQc
-          ? fetchAuthenticatedJson(
-              `${config.baseURL}/inward/`,
-            ).catch((error) => {
-              console.warn(
-                "Inward API unavailable for QC failures:",
-                error,
-              );
-              return [];
-            })
-          : Promise.resolve([]),
+        fetchAllOutwardResults(
+          `${config.baseURL}/inward/?paginate=1&page_size=100`,
+        ).catch((error) => {
+          console.warn(
+            "Inward API unavailable for QC failures:",
+            error,
+          );
+          return [];
+        }),
 
         /*
          * IMPORTANT:
@@ -2420,9 +2869,37 @@ function OutwardPage() {
   function getScrapApprovalLabel(row) {
     const status =
       getScrapApprovalStatus(row);
+    const metadata = getOutwardAllocationMetadata(row);
+    const managerDecision = String(
+      metadata.manager_disposition_decision || metadata.reorder_choice || "",
+    )
+      .trim()
+      .toUpperCase();
+
+    if (
+      hasManagerDispositionForReturnableQc(row) &&
+      managerDecision === "YES"
+    ) {
+      const restoreDetails = getReturnableRestoreDetails(row);
+      const restoreState = String(restoreDetails?.state || "")
+        .trim()
+        .toUpperCase();
+      const hasRestorePo = Boolean(
+        String(metadata.restore_po_number || metadata.restorePoNumber || "").trim() ||
+          (Array.isArray(metadata.restore_po_numbers) &&
+            metadata.restore_po_numbers.length > 0),
+      );
+
+      if (hasRestorePo && ["PENDING_FINANCE", "RESTORE_PENDING_FINANCE"].includes(restoreState)) {
+        return "QC Failed - Restore PO Pending Finance";
+      }
+      return `QC Failed - ${restoreDetails?.label || "Restore Approved"}`;
+    }
 
     if (status === "PENDING_FINANCE") {
-      return "Pending Finance";
+      return isFinalScrapDecision(row)
+        ? "Final Scrap - Pending Finance"
+        : "Pending Finance";
     }
 
     if (status === "PENDING_MANAGER") {
@@ -2518,9 +2995,18 @@ function OutwardPage() {
     });
   }
 
-  const scrapItems = outwardData.filter((item) => item.type === "scrap" && !isQcFailedItem(item));
+  const scrapItems = outwardData.filter(
+    (item) =>
+      item.type === "scrap" &&
+      (hasManagerDispositionForReturnableQc(item) || !isQcFailedItem(item)),
+  );
   const failedQcItems = outwardData.filter(
-    (item) => item.type === "failedQc" || (item.type === "scrap" && isQcFailedItem(item)),
+    (item) =>
+      item.type === "failedQc" ||
+      (item.type === "scrap" &&
+        (hasManagerDispositionForReturnableQc(item) ||
+          isQcFailedItem(item) ||
+          isFinalScrapDecision(item))),
   );
   const salesItems = outwardData.filter(
     (item) => item.type === "sales" || String(item.outward_type || "").toUpperCase() === "SALES",
@@ -2745,20 +3231,26 @@ const columns =
           key: "remarks",
           header: "Remarks",
           className: "text-center text-sm",
-          render: (row) => (
-            <span
-              className="inline-block max-w-[200px] break-words text-center text-[14px] font-medium leading-5 text-muted-foreground"
-              title={
-                row?.remarks ||
-                row?.reason ||
-                ""
-              }
-            >
-              {row?.remarks ||
-                row?.reason ||
-                "-"}
-            </span>
-          ),
+          render: (row) => {
+            const rawRemarks = row?.displayRemarks ?? row?.remarks ?? row?.reason;
+            const remarks = formatQcRemarks(rawRemarks);
+
+            return (
+              <button
+                type="button"
+                onClick={() => setRemarkPopup({ title: "Scrap Remarks", text: remarks })}
+                className="mx-auto block w-full max-w-[240px] rounded-lg border border-border/70 bg-muted/30 px-3 py-2 text-left transition hover:border-primary/50 hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                title="Click to view serial numbers and remarks"
+              >
+                <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Scrap note
+                </span>
+                <span className="mt-1 block line-clamp-3 break-words text-xs leading-5 text-foreground">
+                  {remarks}
+                </span>
+              </button>
+            );
+          },
         },
         {
           key: "status",
@@ -2942,19 +3434,23 @@ const columns =
           header: "QC Remarks",
           className: "text-center",
           render: (row) => {
-            const remarks = formatQcRemarks(
-              row?.displayRemarks ??
-                row?.remarks ??
-                row?.reason,
-            );
+            const rawRemarks = row?.displayRemarks ?? row?.remarks ?? row?.reason;
+            const remarks = formatQcRemarks(rawRemarks);
 
             return (
-              <span
-                className="inline-block max-w-[280px] break-words text-[13px] leading-5 text-muted-foreground"
-                title={remarks}
+              <button
+                type="button"
+                onClick={() => setRemarkPopup({ title: "Failed QC Remarks", text: remarks })}
+                className="mx-auto block w-full max-w-[300px] rounded-lg border border-rose-200/70 bg-rose-50/60 px-3 py-2 text-left transition hover:border-rose-300 hover:bg-rose-50 dark:border-rose-900/70 dark:bg-rose-950/20 dark:hover:bg-rose-950/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/50"
+                title="Click to view serial numbers and QC remarks"
               >
-                {remarks}
-              </span>
+                <span className="block text-[10px] font-semibold uppercase tracking-wide text-rose-700 dark:text-rose-300">
+                  QC note
+                </span>
+                <span className="mt-1 block line-clamp-3 break-words text-xs leading-5 text-foreground">
+                  {remarks}
+                </span>
+              </button>
             );
           },
         },
@@ -2964,6 +3460,7 @@ const columns =
           className: "text-center min-w-[170px]",
           render: (row) => (
             <span className={`inline-flex max-w-[190px] items-center justify-center rounded-full border px-2.5 py-1 text-center text-[11px] font-semibold leading-4 ${
+              isFinanceApprovedFinalScrap(row) ||
               getReturnableRestoreDetails(row)?.state === "RESTORE_COMPLETED"
                 ? "border-emerald-200 bg-emerald-50 text-emerald-800"
                 : "border-amber-200 bg-amber-50 text-amber-800"
@@ -2977,8 +3474,57 @@ const columns =
           header: "Action",
           className: "text-center min-w-[210px]",
           render: (row) => {
+            if (isFinalScrapDecision(row)) {
+              return (
+                <span
+                  className="text-xs font-medium text-muted-foreground"
+                  title="The Manager selected Final Scrap. No QC Failed action is available."
+                >
+                  —
+                </span>
+              );
+            }
+
             const restoreDetails = getReturnableRestoreDetails(row);
             if (restoreDetails) {
+              if (
+                canRequestReplacement &&
+                [
+                  "PENDING_PROCUREMENT",
+                  "RESTORE_PENDING_PROCUREMENT",
+                ].includes(restoreDetails.state)
+              ) {
+                return (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      navigate("/materialsnotifications", {
+                        state: {
+                          openReturnableRestore: {
+                            ...row,
+                            sourceType: "RETURNABLE_RESTORE",
+                            sourceId:
+                              row?.backendId ??
+                              row?.id ??
+                              row?.outward_id ??
+                              row?.outwardId,
+                            sourcePayload: {
+                              ...row,
+                              inventory_allocations:
+                                getOutwardAllocationMetadata(row),
+                            },
+                          },
+                        },
+                      })
+                    }
+                    className="whitespace-nowrap rounded-md border border-indigo-600 bg-indigo-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-indigo-700"
+                    title="Prepare the vendor, price, GST, and delivery details for the Restore purchase."
+                  >
+                    Restore
+                  </button>
+                );
+              }
+
               return (
                 <span
                   className="text-xs font-medium text-muted-foreground"
@@ -2992,6 +3538,8 @@ const columns =
             const hasMr = Boolean(
               String(row?.sourceMrNumber || "").trim()
             );
+            const restoreOrDirectEligible =
+              !hasMr || row?.isReturnableRestore;
             const action = String(
               row?.qcFailedAction ||
                 row?.qc_failed_action ||
@@ -3007,13 +3555,24 @@ const columns =
                 row?.replacementPurchaseOrderId
               );
 
+            const refundStatus = String(
+              row?.refundStatus || ""
+            )
+              .trim()
+              .toUpperCase();
+            const refundAlreadyRequested = [
+              "PENDING_PROCUREMENT",
+              "PENDING_FINANCE",
+              "REFUNDED",
+            ].includes(refundStatus);
+
             const refundCompleted =
-              action ===
-              "RETURN_REQUESTED";
+              refundStatus === "REFUNDED" ||
+              action === "RETURN_REQUESTED";
 
             const actionAlreadyChosen =
               replacementAlreadyRequested ||
-              refundCompleted;
+              refundAlreadyRequested;
 
             const isReplacementSaving =
               replacementSavingId ===
@@ -3026,6 +3585,8 @@ const columns =
               String(
                 row?.inwardEntryId || ""
               );
+            const isActionSaving =
+              isReplacementSaving || isRefundSaving;
 
             return (
               <div className="flex flex-wrap items-center justify-center gap-1.5">
@@ -3036,12 +3597,17 @@ const columns =
                   }
                   disabled={
                     !canRequestReplacement ||
-                    actionAlreadyChosen
+                    actionAlreadyChosen ||
+                    isActionSaving
                   }
                   className="whitespace-nowrap rounded-md border border-blue-600 bg-blue-600 px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-45"
                   title={
                     refundCompleted
                       ? "Refund already completed."
+                      : refundStatus === "PENDING_FINANCE"
+                        ? "Refund is pending Finance approval."
+                        : refundStatus === "PENDING_PROCUREMENT"
+                          ? "Refund is pending Procurement approval."
                       : replacementAlreadyRequested
                         ? "Replacement already requested."
                         : "Create a replacement PO for the failed quantity."
@@ -3061,24 +3627,33 @@ const columns =
                   }
                   disabled={
                     !canRequestReplacement ||
-                    hasMr ||
-                    actionAlreadyChosen
+                    !restoreOrDirectEligible ||
+                    actionAlreadyChosen ||
+                    isActionSaving
                   }
                   className="whitespace-nowrap rounded-md border border-rose-600 bg-rose-600 px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-45"
                   title={
-                    hasMr
-                      ? "Refund is available only for Direct PO QC failures."
+                    !restoreOrDirectEligible
+                      ? "Refund is available only for Direct PO or Restore QC failures."
                       : replacementAlreadyRequested
                         ? "Replacement already requested."
+                        : refundStatus === "PENDING_FINANCE"
+                          ? "Refund is pending Finance approval."
+                          : refundStatus === "PENDING_PROCUREMENT"
+                            ? "Refund is pending Procurement approval."
                         : refundCompleted
                           ? "Refund already completed."
-                          : "Refund the QC-failed quantity and deduct it from the Direct PO."
+                          : "Request a refund for the QC-failed quantity."
                   }
                 >
                   {isRefundSaving
                     ? "Processing..."
                     : refundCompleted
                       ? "Refund Completed"
+                      : refundStatus === "PENDING_FINANCE"
+                        ? "Refund Pending Finance"
+                        : refundStatus === "PENDING_PROCUREMENT"
+                          ? "Refund Pending Procurement"
                       : "Refund"}
                 </button>
               </div>
@@ -3195,7 +3770,7 @@ right={
           {selectedTab === "scrap" && (
             <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm text-muted-foreground max-w-2xl">
-                Scrap records are captured here. New Scrap entries stay Pending Manager until the Manager approves or rejects them from Notifications.
+                Manager-disposed returnable QC failures appear in both Failed QC and Scrap. Restore decisions keep their procurement status; Final Scrap remains pending Finance approval.
               </p>
 {canManageOutward && (
   <button
@@ -3389,17 +3964,45 @@ right={
                       ) => (
                         <div
                           key={`${group.componentName}-${index}`}
-                          className="flex items-center justify-between gap-3 rounded-lg bg-background px-3 py-2"
+                          className="flex items-start justify-between gap-3 rounded-lg bg-background px-3 py-2"
                         >
                           <p className="min-w-0 break-words text-sm font-semibold text-foreground">
                             {group.componentName ||
                               "-"}
                           </p>
-                          <span className="shrink-0 rounded-full bg-muted px-3 py-1 text-xs font-semibold text-foreground">
-                            Qty:{" "}
-                            {group.quantity ??
-                              0}
-                          </span>
+                          <div className="shrink-0 text-right">
+                            <span className="rounded-full bg-muted px-3 py-1 text-xs font-semibold text-foreground">
+                              Qty: {group.quantity ?? 0}
+                            </span>
+                            {group.unitPrice !== null &&
+                              group.unitPrice !== undefined ? (
+                                <div className="mt-2 space-y-1 text-xs">
+                                  <div className="text-muted-foreground">
+                                    {group.unpricedQuantity > 0
+                                      ? "Unit price (costed units): "
+                                      : "Unit price: "}
+                                    <span className="font-semibold text-foreground">
+                                      ₹{Number(group.unitPrice).toFixed(2)}
+                                    </span>
+                                  </div>
+                                  <div className="font-semibold text-foreground">
+                                    {group.unpricedQuantity > 0
+                                      ? "Known amount: "
+                                      : "Amount: "}
+                                    ₹{Number(group.amount || 0).toFixed(2)}
+                                  </div>
+                                  {group.unpricedQuantity > 0 && (
+                                    <div className="text-amber-700 dark:text-amber-300">
+                                      Price unavailable for {group.unpricedQuantity} unit(s)
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="mt-2 text-xs font-medium text-amber-700 dark:text-amber-300">
+                                  Price unavailable
+                                </div>
+                              )}
+                          </div>
                         </div>
                       ),
                     )}
@@ -3418,6 +4021,42 @@ right={
                   </div>
                 )}
               </div>
+
+              <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                <div className="rounded-xl border border-border bg-card p-3">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    Component types
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-foreground">
+                    {scrapComponentDetails.componentGroups?.length || 0}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-border bg-card p-3">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    Total components
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-foreground">
+                    {scrapComponentDetails.quantity || 0}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-border bg-card p-3">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    {scrapComponentDetails.unpricedQuantity > 0
+                      ? "Known total cost"
+                      : "Total component cost"}
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-foreground">
+                    {scrapComponentDetails.hasComponentPrice
+                      ? `₹${Number(scrapComponentDetails.totalComponentAmount || 0).toFixed(2)}`
+                      : "Price unavailable"}
+                  </p>
+                </div>
+              </div>
+              {scrapComponentDetails.unpricedQuantity > 0 && (
+                <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+                  Price data is missing for {scrapComponentDetails.unpricedQuantity} of {scrapComponentDetails.quantity} component unit(s).
+                </p>
+              )}
 
               <div className="mt-3">
                 <div className="rounded-xl bg-muted p-3">
@@ -3503,13 +4142,12 @@ right={
           <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/50 p-4">
             <div className="w-full max-w-xl rounded-3xl border border-border bg-card p-6 shadow-2xl">
               <h3 className="text-lg font-semibold text-foreground">
-                Confirm Direct PO Refund
+                Confirm Refund
               </h3>
 
               <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                The QC-failed quantity will be deducted from the original
-                Direct PO. The PO quantity and price will recalculate
-                automatically.
+                After Procurement and Finance approval, the QC-failed
+                quantity and value will be deducted from the source PO.
               </p>
 
               <div className="mt-5 grid gap-3 rounded-2xl border border-border bg-muted/30 p-4 text-sm">
@@ -3628,8 +4266,7 @@ right={
               )}
 
               <p className="mt-4 text-xs leading-5 text-muted-foreground">
-                Click OK to complete the refund. This action will reduce the
-                failed quantity from the Direct PO and recalculate its total.
+                Click OK to request the refund for Procurement approval.
               </p>
 
               <div className="mt-6 flex justify-end gap-2">
@@ -3788,6 +4425,11 @@ right={
             </div>
           </div>
         )}
+
+        <RemarksTextPopup
+          dialog={remarkPopup}
+          onClose={() => setRemarkPopup(null)}
+        />
 
         {scrapRejectDetails && (
           <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/45 p-4">

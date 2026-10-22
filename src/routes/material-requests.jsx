@@ -759,6 +759,8 @@ function MaterialRequestsPage() {
     useState({});
   const [requestsLoading, setRequestsLoading] = useState(true);
   const [requestsError, setRequestsError] = useState("");
+  const [finishActionError, setFinishActionError] = useState("");
+  const [finishingRequestId, setFinishingRequestId] = useState(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [selectionMode, setSelectionMode] = useState(false);
   const [deletingRows, setDeletingRows] = useState(false);
@@ -6488,6 +6490,30 @@ const displayReadyRequests =
     }
   };
 
+  const finishAssemblyRequest = async (request) => {
+    setFinishingRequestId(request.id);
+    setFinishActionError("");
+
+    try {
+      await fetchAuthenticatedJson(
+        `${config.baseURL}/materialrequest/material-requests/${encodeURIComponent(request.id)}/finish-assembly/`,
+        {
+          method: "POST",
+          body: JSON.stringify({}),
+        },
+      );
+      await loadRequests({ silent: true });
+      window.dispatchEvent(new Event("inventory:changed"));
+    } catch (error) {
+      console.error("Unable to finish Assembly Material Request:", error);
+      setFinishActionError(
+        error?.message || "Unable to finish this Material Request.",
+      );
+    } finally {
+      setFinishingRequestId(null);
+    }
+  };
+
   useEffect(() => {
     if (!showBomModal) {
       return undefined;
@@ -8192,6 +8218,43 @@ columns={[...([
             key: "action",
             header: "Action",
             render: (r) => {
+              const requestType = String(
+                r.request_type || r.requestType || "",
+              ).trim().toUpperCase();
+              const requestStatus = String(
+                r.status || r.material_request_status || "",
+              ).trim().toUpperCase();
+
+              const isAssemblyFinishRequest =
+                !["RETAIL_SALES", "RETURNABLE"].includes(requestType) &&
+                ([
+                  "BOM",
+                  "CUSTOM_BOM",
+                  "CUSTOMIZED_BOM",
+                  "CUSTOMISED_BOM",
+                  "R&D",
+                  "RD",
+                ].includes(requestType) || isFromScrapRequest(r));
+
+              if (
+                isAssemblyFinishRequest &&
+                requestStatus === "INVENTORY_ISSUED" &&
+                ["engineer", "admin"].includes(role)
+              ) {
+                return (
+                  <button
+                    type="button"
+                    disabled={finishingRequestId === r.id}
+                    onClick={() => finishAssemblyRequest(r)}
+                    className="inline-flex w-full max-w-[156px] items-center justify-center rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-center text-[11px] font-semibold text-emerald-800 transition-colors hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {finishingRequestId === r.id
+                      ? "Finishing..."
+                      : "Finish / Completed"}
+                  </button>
+                );
+              }
+
               const visibleStatus =
                 getVisibleApprovalStatus(r);
 
@@ -8260,6 +8323,15 @@ columns={[...([
         loadingDescription="Fetching the latest Material Request and workflow details."
         hideEmptyState={Boolean(requestsError)}
         />
+
+        {finishActionError && (
+          <div
+            role="alert"
+            className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300"
+          >
+            {finishActionError}
+          </div>
+        )}
 
         {(materialRequestsTotalCount > MATERIAL_REQUESTS_PAGE_SIZE || materialRequestsPage > 1) ? (
           <PaginationControls

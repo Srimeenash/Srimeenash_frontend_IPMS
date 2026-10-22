@@ -15,6 +15,12 @@ const PURPOSE_TABS = [
   ["MISCELLANEOUS_USAGE", "Miscellaneous Usage"],
 ];
 
+const ASSEMBLY_TYPE_TABS = [
+  ["BOM", "BOM"],
+  ["CUSTOM_BOM", "Customised BOM"],
+  ["R&D", "R&D"],
+];
+
 const RETURNABLE_COMPONENT_REQUEST_STATUSES = new Set([
   "PENDING",
   "REQUESTED",
@@ -93,6 +99,24 @@ const normalizeMetadata = (value) =>
   value && typeof value === "object" && !Array.isArray(value)
     ? value
     : {};
+
+const getUsageMetadata = (item = {}) => {
+  const value =
+    item?.inventory_issue_details ??
+    item?.display_inventory_issue_details;
+
+  if (Array.isArray(value)) {
+    return value.reduce(
+      (combined, row) => ({
+        ...combined,
+        ...normalizeMetadata(row),
+      }),
+      {},
+    );
+  }
+
+  return normalizeMetadata(value);
+};
 
 const getMrNumber = (row = {}) =>
   String(
@@ -190,13 +214,82 @@ const getMrType = (row = {}) =>
       "",
   );
 
+const isAssemblyRequestType = (value) =>
+  [
+    "BOM",
+    "CUSTOM_BOM",
+    "CUSTOMIZED_BOM",
+    "CUSTOMISED_BOM",
+    "R&D",
+    "RD",
+  ].includes(normalizeStatus(value));
+
+const isAssemblyReturnGroup = (group) =>
+  group?.assemblyReturn === true;
+
+const getUnreturnedAssemblyItems = (group) =>
+  (Array.isArray(group?.items) ? group.items : []).filter(
+    (item) =>
+      item?.id !== undefined &&
+      item?.id !== null &&
+      !String(item.id).startsWith("mr-") &&
+      Boolean(item.issued_date) &&
+      !Boolean(item.received_date),
+  );
+
+const isAssemblyQcPendingItem = (item = {}) =>
+  Boolean(item.received_date) &&
+  !["PASSED", "FAILED"].includes(
+    normalizeStatus(getUsageMetadata(item).return_qc_status),
+  ) &&
+  !normalizeStatus(item.return_condition);
+
+const getAssemblyReturnStatus = (item = {}) => {
+  const metadata = getUsageMetadata(item);
+  const condition = normalizeStatus(
+    item.return_condition || metadata.return_qc_status,
+  );
+  if (condition === "NOT_OK" || condition === "FAILED") {
+    const managerDecision = normalizeStatus(
+      metadata.manager_disposition_decision ||
+        metadata.scrap_disposition_decision ||
+        metadata.reorder_choice,
+    );
+    const approvalStatus = normalizeStatus(
+      item.return_approval_status || metadata.scrap_approval_status,
+    );
+
+    if (managerDecision === "NO") {
+      if (approvalStatus === "PENDING_FINANCE") {
+        return "Final Scrap - Pending Finance";
+      }
+      if (approvalStatus === "COMPLETED") {
+        return "Final Scrap Completed";
+      }
+      if (approvalStatus === "REJECTED") {
+        return "Final Scrap Rejected";
+      }
+    }
+
+    if (approvalStatus === "PENDING_MANAGER") {
+      return "QC Failed - Pending Manager";
+    }
+
+    return "QC Failed";
+  }
+  if (condition === "OK" || condition === "PASSED") return "QC Passed";
+  if (item.received_date) return "QC Pending";
+  if (item.issued_date) return "Not Returned";
+  return "Not Issued";
+};
+
 const getUsageMode = (row = {}) => {
   const requestType = getMrType(row);
   const purpose = normalizeStatus(row.purpose);
 
   if (
     requestType !== "RETURNABLE" &&
-    ["FLIGHT_TEST", "CUSTOMER_DEMO", "EVENT"].includes(purpose)
+    PURPOSE_TABS.some(([purposeValue]) => purposeValue === purpose)
   ) {
     return "DRONE";
   }
@@ -349,6 +442,13 @@ const getItemDisplayIssueDetails = (item = {}) => {
     : [];
 };
 
+const getAssemblyDroneQuantity = (group) => {
+  const requestQuantity = Number(group?.droneQuantity ?? 0);
+  return Number.isFinite(requestQuantity) && requestQuantity > 0
+    ? Math.floor(requestQuantity)
+    : 0;
+};
+
 const getGroupStatus = (group) => {
   if (group.virtual) {
     return normalizeStatus(group.mrStatus || "PENDING");
@@ -359,6 +459,103 @@ const getGroupStatus = (group) => {
     : [];
 
   if (!items.length) {
+    return normalizeStatus(group.mrStatus || "PENDING");
+  }
+
+  if (isAssemblyReturnGroup(group)) {
+    const approvalStates = items.map((item) =>
+      normalizeStatus(item.return_approval_status),
+    );
+    const conditions = items.map((item) =>
+      normalizeStatus(item.return_condition),
+    );
+    const pendingQc = items.some(isAssemblyQcPendingItem);
+    const pendingManager = approvalStates.includes(
+      "PENDING_MANAGER",
+    );
+    const pendingFinance = approvalStates.includes(
+      "PENDING_FINANCE",
+    );
+    const finalScrapPendingFinance = pendingFinance && items.some((item) => {
+      const metadata = getUsageMetadata(item);
+      return normalizeStatus(
+        metadata.manager_disposition_decision ||
+          metadata.scrap_disposition_decision ||
+          metadata.reorder_choice,
+      ) === "NO";
+    });
+    const restorePendingFinance = pendingFinance && items.some((item) => {
+      const metadata = getUsageMetadata(item);
+      return normalizeStatus(
+        metadata.manager_disposition_decision ||
+          metadata.scrap_disposition_decision ||
+          metadata.reorder_choice,
+      ) === "YES";
+    });
+    const anyRejected = approvalStates.includes("REJECTED");
+    const hasUnreturnedIssued = items.some(
+      (item) =>
+        Boolean(item.issued_date) &&
+        !Boolean(item.received_date),
+    );
+
+    if (anyRejected) return "REJECTED";
+    if (pendingManager) return "QC_FAILED_PENDING_MANAGER";
+    if (finalScrapPendingFinance) {
+      return "QC_FAILED_FINAL_SCRAP_PENDING_FINANCE";
+    }
+    if (restorePendingFinance) {
+      return "QC_FAILED_RESTORE_PENDING_FINANCE";
+    }
+    if (pendingFinance) return "QC_FAILED_PENDING_FINANCE";
+    if (pendingQc) return "RETURNED_QC_PENDING";
+
+    if (conditions.includes("NOT_OK")) {
+      const metadata = items.map(getUsageMetadata);
+      if (metadata.some((row) =>
+        String(row.restore_po_number || "").trim() ||
+        (Array.isArray(row.restore_po_numbers) && row.restore_po_numbers.length > 0),
+      )) {
+        return "QC_FAILED_RESTORE_PO_RAISED";
+      }
+      if (metadata.some((row) =>
+        row.procurement_restore_ready === true ||
+        ["PENDING_PROCUREMENT", "ACTION_REQUIRED", "PENDING_FINANCE", "PROCUREMENT_APPROVED"].includes(
+          normalizeStatus(row.procurement_restore_status || row.restore_status),
+        ),
+      )) {
+        const restorePendingFinance = metadata.some((row) =>
+          ["PENDING_FINANCE", "PROCUREMENT_APPROVED"].includes(
+            normalizeStatus(row.procurement_restore_status || row.restore_status),
+          ),
+        );
+        return restorePendingFinance
+          ? "QC_FAILED_RESTORE_PENDING_FINANCE"
+          : "QC_FAILED_RESTORE_PENDING_PROCUREMENT";
+      }
+      if (
+        approvalStates.length > 0 &&
+        approvalStates.every((value) => value === "COMPLETED")
+      ) {
+        return "FINAL_SCRAP_COMPLETED";
+      }
+      return "QC_FAILED";
+    }
+
+    if (hasUnreturnedIssued) return "ISSUED_TO_ENGINEER";
+
+    if (
+      items.every((item) => Boolean(item.received_date)) &&
+      conditions.length > 0 &&
+      conditions.every((value) => value === "OK")
+    ) {
+      return "QC_PASSED_RETURNED_TO_STORE";
+    }
+
+    if (items.some((item) => Boolean(item.received_date))) {
+      return "RETURNED";
+    }
+
     return normalizeStatus(group.mrStatus || "PENDING");
   }
 
@@ -512,6 +709,7 @@ const getStatusClass = (status) => {
   if (
     value.includes("PASSED") ||
     value.includes("COMPLETED") ||
+    value === "RETURNED" ||
     value === "ISSUED_TO_ENGINEER" ||
     value === "MR_COMPLETED" ||
     value === "INVENTORY_ISSUED"
@@ -550,14 +748,23 @@ const getStatusLabel = (status) => {
     MR_COMPLETED: "MR Completed",
     ISSUED_TO_ENGINEER: "Issued to Engineer",
     RETURNED: "Returned",
+    PARTIALLY_RETURNED: "Partially Returned",
     RETURNED_QC_PENDING: "Returned - QC Pending",
     QC_FAILED_PENDING_MANAGER: "QC Failed - Pending Manager",
     QC_FAILED_PENDING_FINANCE: "QC Failed - Pending Finance",
+    QC_FAILED_FINAL_SCRAP_PENDING_FINANCE:
+      "QC Failed - Final Scrap Pending Finance",
+    QC_FAILED_RESTORE_PENDING_PROCUREMENT:
+      "QC Failed - Restore Pending Procurement",
+    QC_FAILED_RESTORE_PENDING_FINANCE:
+      "QC Failed - Restore Pending Finance",
+    QC_FAILED_RESTORE_PO_RAISED: "QC Failed - Restore PO Raised",
     QC_FAILED: "QC Failed",
     QC_PASSED_DRONE_READY: "QC Passed - Drone Ready",
     QC_PASSED_RETURNED_TO_STORE: "QC Passed - Returned to In Store",
     RESTORE_PENDING_PROCUREMENT:
-      "Finance Approved - Restore Pending Procurement",
+      "Manager Approved - Restore Pending Procurement",
+    RESTORE_PENDING_FINANCE: "Restore PO - Pending Finance",
     RESTORE_PO_RAISED: "Restore PO Raised",
     DRONE_QC_DISPOSITION_COMPLETED:
       "Drone QC Disposition Completed",
@@ -568,7 +775,7 @@ const getStatusLabel = (status) => {
   return labels[value] || prettyStatus(value);
 };
 
-export default function ReturnablePage() {
+export default function InAssemblyPage() {
   const { user, activeRole } = useAuth();
   const location = useLocation();
 
@@ -582,6 +789,45 @@ export default function ReturnablePage() {
   )
     .trim()
     .toLowerCase();
+
+  const getDisplayedGroupStatus = (group) => {
+    const status = getGroupStatus(group);
+    if (isAssemblyReturnGroup(group) && group.assemblyCompleted) {
+      const returnDispositionStatuses = new Set([
+        "QC_FAILED_PENDING_MANAGER",
+        "QC_FAILED_PENDING_FINANCE",
+        "QC_FAILED_FINAL_SCRAP_PENDING_FINANCE",
+        "QC_FAILED_RESTORE_PENDING_PROCUREMENT",
+        "QC_FAILED_RESTORE_PENDING_FINANCE",
+        "QC_FAILED_RESTORE_PO_RAISED",
+        "QC_FAILED",
+        "FINAL_SCRAP_COMPLETED",
+        "RESTORE_PENDING_PROCUREMENT",
+        "RESTORE_PENDING_FINANCE",
+        "RESTORE_PO_RAISED",
+        "REJECTED",
+      ]);
+      return returnDispositionStatuses.has(status)
+        ? status
+        : "COMPLETED";
+    }
+
+    if (role !== "engineer" || !isAssemblyReturnGroup(group)) {
+      return status;
+    }
+
+    const issuedItems = (Array.isArray(group.items) ? group.items : []).filter(
+      (item) => Boolean(item.issued_date),
+    );
+    if (!issuedItems.length) return status;
+
+    const returnedCount = issuedItems.filter((item) =>
+      Boolean(item.received_date),
+    ).length;
+    if (returnedCount === issuedItems.length) return "RETURNED";
+    if (returnedCount > 0) return "PARTIALLY_RETURNED";
+    return status;
+  };
 
   const canInventoryAction = [
     "inventory",
@@ -627,7 +873,13 @@ export default function ReturnablePage() {
   const [activePurpose, setActivePurpose] =
     useState("FLIGHT_TEST");
 
+  const [activeAssemblyType, setActiveAssemblyType] =
+    useState(null);
+
   const [details, setDetails] =
+    useState(null);
+
+  const [componentListDetails, setComponentListDetails] =
     useState(null);
 
   const [processing, setProcessing] =
@@ -644,6 +896,8 @@ export default function ReturnablePage() {
 
   const [moveReturnDialog, setMoveReturnDialog] =
     useState(null);
+  const [moveReturnSelectedIds, setMoveReturnSelectedIds] =
+    useState([]);
   const [moveReturnDate, setMoveReturnDate] =
     useState("");
   const [moveReturnRemarks, setMoveReturnRemarks] =
@@ -720,6 +974,82 @@ export default function ReturnablePage() {
 
       let usages =
         unwrapList(usagePayload);
+      const projectInventoryList = unwrapList(projectInventoryPayload);
+
+      const normalizeReference = (value) =>
+        String(value ?? "")
+          .trim()
+          .toUpperCase();
+      const getReferenceValues = (value) => {
+        if (value && typeof value === "object") {
+          return [
+            value.id,
+            value.pk,
+            value.material_request_id,
+            value.material_request_number,
+            value.request_id,
+            value.mr_id,
+          ].filter((item) => item !== undefined && item !== null && String(item).trim());
+        }
+        return value === undefined || value === null || String(value).trim() === ""
+          ? []
+          : [value];
+      };
+      const getProjectRowsForMr = (mr) => {
+        const mrReferences = new Set(
+          [
+            mr?.id,
+            mr?.material_request_id,
+            mr?.material_request_number,
+            mr?.request_id,
+            mr?.mr_id,
+          ]
+            .filter((value) => value !== undefined && value !== null && String(value).trim())
+            .map(normalizeReference),
+        );
+        return projectInventoryList.filter((row) =>
+          [
+            row?.material_request,
+            row?.material_request_id,
+            row?.material_request_number,
+            row?.source_mr_number,
+            row?.request_id,
+            row?.mr_id,
+          ]
+            .flatMap(getReferenceValues)
+            .some((value) => mrReferences.has(normalizeReference(value))),
+        );
+      };
+      const getProjectInventoryId = (row) =>
+        normalizeReference(row?.id ?? row?.pk ?? row?.project_inventory_id);
+      const getIssuedProjectQuantity = (row) => {
+        const hasSourceQuantities =
+          row?.issued_store_quantity !== undefined ||
+          row?.issued_purchased_quantity !== undefined;
+        return Math.max(
+          0,
+          hasSourceQuantities
+            ? Number(row?.issued_store_quantity || 0) +
+                Number(row?.issued_purchased_quantity || 0)
+            : Number(row?.issued_quantity || 0),
+        );
+      };
+
+      const trackedAssemblyQuantityByProjectInventory = new Map();
+      usages.forEach((usage) => {
+        const metadata = getUsageMetadata(usage);
+        if (normalizeStatus(metadata.source) !== "ASSEMBLY_MR") return;
+        const projectInventoryId = normalizeReference(metadata.project_inventory_id);
+        if (!projectInventoryId) return;
+        const quantity = Math.max(
+          0,
+          Number(metadata.quantity ?? usage?.quantity ?? 0),
+        );
+        trackedAssemblyQuantityByProjectInventory.set(
+          projectInventoryId,
+          (trackedAssemblyQuantityByProjectInventory.get(projectInventoryId) || 0) + quantity,
+        );
+      });
 
       /*
        * COMPONENT mode reaches this page before ComponentUsage exists.
@@ -748,21 +1078,47 @@ export default function ReturnablePage() {
           );
         });
 
-      if (issuedReturnableMrs.length) {
+      const issuedAssemblyMrs = mrList.filter((mr) => {
+        if (!isAssemblyRequestType(mr?.request_type)) return false;
+
+        return getProjectRowsForMr(mr).some((row) => {
+          const issuedQuantity = getIssuedProjectQuantity(row);
+          if (issuedQuantity <= 0) return false;
+          const projectInventoryId = getProjectInventoryId(row);
+          const trackedQuantity =
+            trackedAssemblyQuantityByProjectInventory.get(projectInventoryId) || 0;
+          return issuedQuantity > trackedQuantity;
+        });
+      });
+
+      if (issuedReturnableMrs.length || issuedAssemblyMrs.length) {
         await Promise.allSettled(
-          issuedReturnableMrs.map((mr) =>
-            fetchAuthenticatedJson(
-              `${config.baseURL}/component-usage/sync-returnable-mr/`,
-              {
-                method: "POST",
-                body: JSON.stringify({
-                  material_request_id:
-                    mr.material_request_id ||
-                    mr.id,
-                }),
-              },
+          [
+            ...issuedReturnableMrs.map((mr) =>
+              fetchAuthenticatedJson(
+                `${config.baseURL}/component-usage/sync-returnable-mr/`,
+                {
+                  method: "POST",
+                  body: JSON.stringify({
+                    material_request_id:
+                      mr.material_request_id || mr.id,
+                  }),
+                },
+              ),
             ),
-          ),
+            ...issuedAssemblyMrs.map((mr) =>
+              fetchAuthenticatedJson(
+                `${config.baseURL}/component-usage/sync-assembly-mr/`,
+                {
+                  method: "POST",
+                  body: JSON.stringify({
+                    material_request_id:
+                      mr.material_request_id || mr.id,
+                  }),
+                },
+              ),
+            ),
+          ],
         );
 
         const refreshed =
@@ -978,12 +1334,9 @@ export default function ReturnablePage() {
           row?.purpose,
         );
 
-      if (!mrNumber || !purpose) {
+      if (!mrNumber) {
         return;
       }
-
-      const key =
-        `${mrNumber}|${purpose}`;
 
       const sourceMr =
         sourceMrByReference.get(
@@ -1000,6 +1353,31 @@ export default function ReturnablePage() {
             .toUpperCase(),
         ) ||
         null;
+
+      const requestType = normalizeStatus(
+        row?.request_type || sourceMr?.request_type,
+      );
+      const assemblyReturn =
+        isAssemblyRequestType(requestType) &&
+        !purpose &&
+        normalizeStatus(getUsageMetadata(row).source) === "ASSEMBLY_MR";
+      const sourceMrStatus = normalizeStatus(
+        sourceMr?.status ||
+          row?.material_request_status ||
+          row?.mr_status ||
+          sourceMr?.approval_status,
+      );
+      const assemblyCompleted =
+        assemblyReturn && ["MR_COMPLETED", "COMPLETED"].includes(sourceMrStatus);
+      const groupPurpose = assemblyReturn ? "ASSEMBLY" : purpose;
+
+      if (!groupPurpose) {
+        return;
+      }
+
+      const key = assemblyReturn
+        ? `${mrNumber}|ASSEMBLY`
+        : `${mrNumber}|${groupPurpose}`;
 
       const projectFromProjectInventory =
         projectInventoryProjectByMr.get(
@@ -1021,23 +1399,38 @@ export default function ReturnablePage() {
         map.set(key, {
           key,
           virtual: false,
+          assemblyReturn,
           mrNumber,
           requester:
             row.employee_name || "-",
-          purpose,
+          purpose: groupPurpose,
           requestedDate:
             row.requested_date,
           returnDate:
             row.return_due_date,
-          mrStatus:
-            row.material_request_status ||
-            row.status ||
-            "PENDING",
+          mrStatus: assemblyCompleted
+            ? "MR_COMPLETED"
+            : row.material_request_status || row.status || "PENDING",
+          assemblyCompleted,
           approvalStatus:
             row.material_request_approval_status ||
             "",
-          requestType:
-            row.request_type || "",
+          requestType,
+          customizedBom: Boolean(
+            row.customized_bom ??
+              sourceMr?.customized_bom,
+          ),
+          droneQuantity: Number(
+            sourceMr?.drone_quantity ??
+              sourceMr?.droneQuantity ??
+              sourceMr?.required_quantity ??
+              sourceMr?.requiredQuantity ??
+              sourceMr?.assembly_quantity ??
+              sourceMr?.assemblyQuantity ??
+              row?.drone_quantity ??
+              row?.droneQuantity ??
+              0,
+          ),
           project:
             /*
              * Preferred order:
@@ -1079,6 +1472,22 @@ export default function ReturnablePage() {
           projectFromProjectInventory ||
           "";
       }
+
+      if (!currentGroup.requestType && sourceMr?.request_type) {
+        currentGroup.requestType = sourceMr.request_type;
+      }
+      currentGroup.assemblyReturn =
+        currentGroup.assemblyReturn || assemblyReturn;
+      currentGroup.assemblyCompleted =
+        currentGroup.assemblyCompleted || assemblyCompleted;
+      if (currentGroup.assemblyCompleted) {
+        currentGroup.mrStatus = "MR_COMPLETED";
+      }
+      currentGroup.customizedBom = Boolean(
+        row?.customized_bom ??
+          sourceMr?.customized_bom ??
+          currentGroup.customizedBom,
+      );
 
       currentGroup.items.push(row);
     });
@@ -1218,9 +1627,37 @@ export default function ReturnablePage() {
       map.values(),
     )
       .filter(
-        (group) =>
-          group.purpose ===
-          activePurpose,
+        (group) => {
+          if (activeAssemblyType) {
+            if (!isAssemblyReturnGroup(group)) {
+              return false;
+            }
+
+            const requestType = normalizeStatus(group.requestType);
+
+            if (activeAssemblyType === "CUSTOM_BOM") {
+              return (
+                ["CUSTOM_BOM", "CUSTOMIZED_BOM", "CUSTOMISED_BOM"].includes(requestType) ||
+                (requestType === "BOM" && group.customizedBom)
+              );
+            }
+
+            if (activeAssemblyType === "R&D") {
+              return ["R&D", "RD"].includes(requestType);
+            }
+
+            return (
+              activeAssemblyType === "BOM"
+                ? requestType === "BOM" && !group.customizedBom
+                : requestType === activeAssemblyType && !group.customizedBom
+            );
+          }
+
+          return (
+            !isAssemblyReturnGroup(group) &&
+            group.purpose === activePurpose
+          );
+        },
       )
       .sort((a, b) =>
         String(
@@ -1237,6 +1674,7 @@ export default function ReturnablePage() {
     projectRows,
     projectInventoryRows,
     activePurpose,
+    activeAssemblyType,
   ]);
 
   useEffect(() => {
@@ -1266,6 +1704,13 @@ export default function ReturnablePage() {
   const canEngineerMoveToReturn = (group) => {
     if (!canMoveToReturn || !group) {
       return false;
+    }
+
+    if (isAssemblyReturnGroup(group)) {
+      return (
+        !group.assemblyCompleted &&
+        getUnreturnedAssemblyItems(group).length > 0
+      );
     }
 
     const status = normalizeStatus(
@@ -1319,6 +1764,18 @@ export default function ReturnablePage() {
     setMoveReturnDate(getTodayIso());
     setMoveReturnRemarks("");
     setMoveReturnError("");
+    if (isAssemblyReturnGroup(group)) {
+      const availableIds = getUnreturnedAssemblyItems(group).map((item) =>
+        String(item.id),
+      );
+      setMoveReturnSelectedIds((previous) => {
+        return previous
+          .map(String)
+          .filter((id) => availableIds.includes(id));
+      });
+    } else {
+      setMoveReturnSelectedIds([]);
+    }
   };
 
   const closeMoveToReturn = () => {
@@ -1330,6 +1787,7 @@ export default function ReturnablePage() {
     setMoveReturnDate("");
     setMoveReturnRemarks("");
     setMoveReturnError("");
+    setMoveReturnSelectedIds([]);
   };
 
   const resolveReturnUsage = async (group) => {
@@ -1415,6 +1873,36 @@ export default function ReturnablePage() {
     setMoveReturnError("");
 
     try {
+      if (isAssemblyReturnGroup(group)) {
+        const availableItems = getUnreturnedAssemblyItems(group);
+        const selectedIds = moveReturnSelectedIds
+          .map(String)
+          .filter((id) =>
+            availableItems.some((item) => String(item.id) === id),
+          );
+        const usage = availableItems.find(
+          (item) => String(item.id) === selectedIds[0],
+        );
+
+        if (!selectedIds.length || !usage?.id) {
+          setMoveReturnError("Select at least one component to return.");
+          return;
+        }
+
+        await fetchAuthenticatedJson(
+          `${config.baseURL}/component-usage/${encodeURIComponent(
+            usage.id,
+          )}/engineer-return/`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              usage_ids: selectedIds,
+              return_date: getTodayIso(),
+              remarks: String(moveReturnRemarks || "").trim(),
+            }),
+          },
+        );
+      } else {
       const usage =
         await resolveReturnUsage(group);
 
@@ -1440,6 +1928,7 @@ export default function ReturnablePage() {
           }),
         },
       );
+      }
 
       window.dispatchEvent(
         new Event(
@@ -1463,6 +1952,7 @@ export default function ReturnablePage() {
       setMoveReturnDate("");
       setMoveReturnRemarks("");
       setMoveReturnError("");
+      setMoveReturnSelectedIds([]);
 
       await loadData();
     } catch (error) {
@@ -1483,6 +1973,14 @@ export default function ReturnablePage() {
 
   const openDetailsWithSerials = async (group) => {
     if (!group) return;
+
+    if (isAssemblyReturnGroup(group)) {
+      setDetails(group);
+      setMoveReturnSelectedIds(
+        getUnreturnedAssemblyItems(group).map((item) => String(item.id)),
+      );
+      return;
+    }
 
     /*
      * View Details must also hydrate exact issued serials.
@@ -1586,7 +2084,13 @@ export default function ReturnablePage() {
                 component_id:
                   getComponentId(item),
                 component_label:
-                  getComponentLabel(item),
+                  getReturnableComponentId(item),
+                component_type:
+                  item.component_master_type ||
+                  item.component_type ||
+                  item.component_category ||
+                  item.category ||
+                  "—",
                 serial_number: serial,
                 unit_index: index + 1,
                 condition: "",
@@ -1615,7 +2119,13 @@ export default function ReturnablePage() {
             component_id:
               getComponentId(item),
             component_label:
-              getComponentLabel(item),
+              getReturnableComponentId(item),
+            component_type:
+              item.component_master_type ||
+              item.component_type ||
+              item.component_category ||
+              item.category ||
+              "—",
             serial_number: "",
             unit_index: index + 1,
             condition: "",
@@ -1640,14 +2150,18 @@ export default function ReturnablePage() {
     if (
       !canInventoryAction ||
       !group ||
-      getGroupStatus(group) !==
-        "RETURNED_QC_PENDING"
+      (!isAssemblyReturnGroup(group) &&
+        getGroupStatus(group) !== "RETURNED_QC_PENDING")
     ) {
       return;
     }
 
+    let qcItems = isAssemblyReturnGroup(group)
+      ? group.items.filter(isAssemblyQcPendingItem)
+      : group.items;
+
     const firstUsage =
-      group?.items?.find(
+      qcItems?.find(
         (item) =>
           item?.id !== undefined &&
           item?.id !== null,
@@ -1676,7 +2190,13 @@ export default function ReturnablePage() {
           )}/hydrate-return-serials/`,
           {
             method: "POST",
-            body: JSON.stringify({}),
+            body: JSON.stringify(
+              isAssemblyReturnGroup(group)
+                ? {
+                    usage_ids: qcItems.map((item) => item.id),
+                  }
+                : {},
+            ),
           },
         );
 
@@ -1687,10 +2207,19 @@ export default function ReturnablePage() {
         : Array.isArray(hydratedPayload)
           ? hydratedPayload
           : group.items;
+      const qcUsageIds = new Set(qcItems.map((item) => String(item.id)));
+      const scopedHydratedItems = hydratedItems.filter((item) =>
+        qcUsageIds.has(String(item?.id)),
+      );
+      const itemsForQc =
+        isAssemblyReturnGroup(group) &&
+        !scopedHydratedItems.length
+          ? qcItems
+          : scopedHydratedItems;
 
       const hydratedGroup = {
         ...group,
-        items: hydratedItems,
+        items: itemsForQc,
       };
 
       setSerialQcDialog(
@@ -1698,7 +2227,7 @@ export default function ReturnablePage() {
       );
       setSerialQcRows(
         buildSerialQcRows(
-          hydratedItems,
+          itemsForQc,
         ),
       );
     } catch (error) {
@@ -1711,10 +2240,13 @@ export default function ReturnablePage() {
        * Still open with the currently loaded rows so Inventory can see
        * exactly which serial data is missing.
        */
-      setSerialQcDialog(group);
+      setSerialQcDialog({
+        ...group,
+        items: qcItems,
+      });
       setSerialQcRows(
         buildSerialQcRows(
-          group.items,
+          qcItems,
         ),
       );
       setSerialQcError(
@@ -1807,6 +2339,7 @@ export default function ReturnablePage() {
     const firstUsage =
       serialQcDialog?.items?.find(
         (item) =>
+          String(item?.id) === String(serialQcRows[0]?.usage_id) &&
           item?.id !== undefined &&
           item?.id !== null,
       );
@@ -1829,8 +2362,13 @@ export default function ReturnablePage() {
         {
           method: "POST",
           body: JSON.stringify({
-            movement_id:
-              serialQcDialog?.key || "",
+            ...(serialQcDialog?.assemblyReturn
+              ? {
+                  usage_ids: serialQcDialog.items.map(
+                    (item) => item.id,
+                  ),
+                }
+              : {}),
             qc_items:
               serialQcRows.map(
                 (row) => ({
@@ -2188,28 +2726,49 @@ export default function ReturnablePage() {
     getGroupStatus(group) ===
       "INVENTORY_PENDING";
 
-  const canPerformReturnQc = (group) =>
-    canInventoryAction &&
-    !group.virtual &&
-    getGroupStatus(group) ===
-      "RETURNED_QC_PENDING";
+  const canPerformReturnQc = (group) => {
+    if (!canInventoryAction || group?.virtual) {
+      return false;
+    }
+
+    if (isAssemblyReturnGroup(group)) {
+      return (
+        !group.assemblyCompleted &&
+        group.items.some(isAssemblyQcPendingItem)
+      );
+    }
+
+    return getGroupStatus(group) === "RETURNED_QC_PENDING";
+  };
+
+  const moveReturnAvailableItems = isAssemblyReturnGroup(moveReturnDialog)
+    ? getUnreturnedAssemblyItems(moveReturnDialog)
+    : [];
+  const moveReturnSelectedSet = new Set(
+    moveReturnSelectedIds.map(String),
+  );
+  const moveReturnSelectedItems = moveReturnAvailableItems.filter((item) =>
+    moveReturnSelectedSet.has(String(item.id)),
+  );
 
   return (
     <PageShell>
       <PageHeader
-        title="Returnable"
-        subtitle="Track component and drone returnable workflows from request through return QC."
+        title="In Assembly"
+        subtitle="Track BOM, Customised BOM and R&D assemblies through issue, return, QC and manager decisions."
       />
 
-      <div className="mb-6 flex flex-wrap gap-2">
+      <div className="mb-3 flex flex-wrap gap-2" role="group" aria-label="Flight Test, Demo, QC Check, Event and Miscellaneous Usage">
         {PURPOSE_TABS.map(
           ([value, label]) => (
             <button
               key={value}
               type="button"
-              onClick={() =>
-                setActivePurpose(value)
-              }
+              aria-pressed={activePurpose === value}
+              onClick={() => {
+                setActiveAssemblyType(null);
+                setActivePurpose(value);
+              }}
               className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
                 activePurpose ===
                 value
@@ -2223,15 +2782,38 @@ export default function ReturnablePage() {
         )}
       </div>
 
+      <div className="mb-6">
+        <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Assembly Returns
+        </div>
+        <div className="flex flex-wrap gap-2" role="group" aria-label="BOM, Customised BOM and R&D">
+          {ASSEMBLY_TYPE_TABS.map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={activeAssemblyType === value}
+              onClick={() => setActiveAssemblyType(value)}
+              className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                activeAssemblyType === value
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border bg-card text-muted-foreground hover:border-primary hover:text-foreground"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-        <div className="grid grid-cols-[0.95fr_0.9fr_1fr_0.72fr_0.72fr_0.72fr_1.6fr_1.15fr_0.8fr] bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          <div>MR ID</div>
+        <div className="grid grid-cols-[1.05fr_0.85fr_1fr_0.78fr_0.78fr_1fr_0.65fr_1.05fr_0.8fr] bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          <div>MR ID / Source</div>
           <div>Requester</div>
           <div>Project</div>
-          <div>Mode</div>
           <div>Request Date</div>
           <div>Return Date</div>
-          <div>Components / Drone</div>
+          <div>Components</div>
+          <div>Drone Qty</div>
           <div>Status</div>
           <div className="text-center">
             Action
@@ -2244,7 +2826,7 @@ export default function ReturnablePage() {
               <Loader2 className="size-7 animate-spin text-primary" />
               <div>
                 <div className="text-sm font-semibold">
-                  Loading Returnable workflow...
+                  Loading assembly and return workflow...
                 </div>
                 <div className="mt-1 text-xs text-muted-foreground">
                   Checking MR, Inventory, Procurement, issue and return status.
@@ -2258,38 +2840,35 @@ export default function ReturnablePage() {
           </div>
         ) : groups.length === 0 ? (
           <div className="px-6 py-10 text-center text-sm text-muted-foreground">
-            No Returnable records found for {formatPurpose(activePurpose)}.
+            No records found for {activeAssemblyType
+              ? ASSEMBLY_TYPE_TABS.find(([value]) => value === activeAssemblyType)?.[1]
+              : formatPurpose(activePurpose)}.
           </div>
         ) : (
           groups.map((group) => {
             const workflowStatus =
-              getGroupStatus(group);
+              getDisplayedGroupStatus(group);
 
-            const summary =
-              group.items.length
-                ? group.items
-                    .map(
-                      (item) =>
-                        `${getComponentLabel(
-                          item,
-                        )}-${Number(
-                          item.quantity ||
-                            0,
-                        )}`,
-                    )
-                    .join(", ")
-                : group.mode ===
-                    "DRONE"
-                  ? "Existing In-Drone assembly"
-                  : "-";
+            const droneQuantity = getAssemblyDroneQuantity(group);
 
             return (
               <div
                 key={group.key}
-                className="grid grid-cols-[0.95fr_0.9fr_1fr_0.72fr_0.72fr_0.72fr_1.6fr_1.15fr_0.8fr] items-center border-t border-border px-4 py-4 text-sm"
+                className="grid grid-cols-[1.05fr_0.85fr_1fr_0.78fr_0.78fr_1fr_0.65fr_1.05fr_0.8fr] items-center border-t border-border px-4 py-4 text-sm"
               >
-                <div className="font-semibold">
-                  {group.mrNumber}
+                <div>
+                  <div className="font-semibold">
+                    {group.mrNumber}
+                  </div>
+                  <div className="mt-1 text-[11px] font-medium text-muted-foreground">
+                    {normalizeStatus(group.requestType) === "BOM"
+                      ? group.customizedBom
+                        ? "Customised BOM"
+                        : "BOM"
+                      : ["R&D", "RD"].includes(normalizeStatus(group.requestType))
+                        ? "R&D"
+                        : group.requestType || "Returnable"}
+                  </div>
                 </div>
 
                 <div>
@@ -2298,15 +2877,6 @@ export default function ReturnablePage() {
 
                 <div className="break-words pr-2 font-medium">
                   {group.project || "-"}
-                </div>
-
-                <div>
-                  <span className="rounded-full border border-border bg-muted/30 px-2 py-1 text-xs font-semibold">
-                    {group.mode ===
-                    "DRONE"
-                      ? "Drone"
-                      : "Components"}
-                  </span>
                 </div>
 
                 <div>
@@ -2321,8 +2891,22 @@ export default function ReturnablePage() {
                   )}
                 </div>
 
-                <div className="break-words text-xs leading-5">
-                  {summary}
+                <div>
+                  {group.mode === "DRONE" ? (
+                    <span className="text-sm text-muted-foreground">—</span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setComponentListDetails(group)}
+                      className="inline-flex items-center rounded-lg border border-primary/30 bg-primary/5 px-3 py-1.5 text-xs font-semibold text-primary transition hover:border-primary hover:bg-primary/10"
+                    >
+                      View components ({group.items.length})
+                    </button>
+                  )}
+                </div>
+
+                <div className="text-center font-semibold tabular-nums">
+                  {droneQuantity || "—"}
                 </div>
 
                 <div>
@@ -2344,19 +2928,19 @@ export default function ReturnablePage() {
                     <button
                       type="button"
                       onClick={() =>
-                        openMoveToReturn(
-                          group,
-                        )
+                        isAssemblyReturnGroup(group)
+                          ? void openDetailsWithSerials(group)
+                          : openMoveToReturn(group)
                       }
                       className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm transition hover:opacity-90"
                     >
-                      Move to Return
+                      {isAssemblyReturnGroup(group)
+                        ? "Return"
+                        : "Move to Return"}
                     </button>
                   )}
 
-                  {canInventoryAction &&
-                  workflowStatus ===
-                    "RETURNED_QC_PENDING" ? (
+                  {canPerformReturnQc(group) ? (
                     <button
                       type="button"
                       disabled={
@@ -2373,7 +2957,25 @@ export default function ReturnablePage() {
                         ? "Loading..."
                         : "QC Check"}
                     </button>
-                  ) : (
+                  ) : isAssemblyReturnGroup(group) &&
+                    [
+                      "QC_FAILED_PENDING_MANAGER",
+                      "QC_FAILED_PENDING_FINANCE",
+                      "QC_FAILED_FINAL_SCRAP_PENDING_FINANCE",
+                      "QC_FAILED_RESTORE_PENDING_PROCUREMENT",
+                      "QC_FAILED_RESTORE_PENDING_FINANCE",
+                      "QC_FAILED_RESTORE_PO_RAISED",
+                      "QC_FAILED",
+                      "FINAL_SCRAP_COMPLETED",
+                      "REJECTED",
+                    ].includes(workflowStatus) ? (
+                    <span
+                      className="text-xs font-medium text-muted-foreground"
+                      title="QC disposition is tracked in the Scrap workflow. No Assembly action is available."
+                    >
+                      —
+                    </span>
+                  ) : !isAssemblyReturnGroup(group) ? (
                     <button
                       type="button"
                       onClick={() =>
@@ -2385,7 +2987,7 @@ export default function ReturnablePage() {
                     >
                       View Details
                     </button>
-                  )}
+                  ) : null}
                 </div>
               </div>
             );
@@ -2395,18 +2997,24 @@ export default function ReturnablePage() {
 
       {moveReturnDialog && (
         <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/55 p-4">
-          <div className="w-full max-w-lg rounded-2xl border border-border bg-card p-6 shadow-2xl">
+          <div className="w-full max-w-2xl rounded-2xl border border-border bg-card p-6 shadow-2xl">
             <div className="border-b border-border pb-4">
               <h2 className="text-xl font-semibold">
-                Move to Return
+                {moveReturnDialog.assemblyReturn
+                  ? "Return Components"
+                  : "Move to Return"}
               </h2>
 
               <p className="mt-1 text-sm text-muted-foreground">
                 {moveReturnDialog.mrNumber}
                 {" · "}
-                {formatPurpose(
-                  moveReturnDialog.purpose,
-                )}
+                {moveReturnDialog.assemblyReturn
+                  ? normalizeStatus(moveReturnDialog.requestType) === "BOM"
+                    ? moveReturnDialog.customizedBom
+                      ? "Customised BOM"
+                      : "BOM"
+                    : "R&D"
+                  : formatPurpose(moveReturnDialog.purpose)}
                 {" · "}
                 {moveReturnDialog.mode ===
                 "DRONE"
@@ -2416,6 +3024,60 @@ export default function ReturnablePage() {
             </div>
 
             <div className="mt-5 space-y-4">
+              {moveReturnDialog.assemblyReturn && (
+                <div className="overflow-hidden rounded-xl border border-border">
+                  <div className="flex items-center justify-between gap-4 border-b border-border bg-muted/30 px-4 py-3">
+                    <div>
+                      <div className="text-sm font-semibold">
+                        Components selected for return
+                      </div>
+                      <div className="mt-0.5 text-xs text-muted-foreground">
+                        Only these components will be sent to Inventory QC.
+                      </div>
+                    </div>
+                    <span className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
+                      {moveReturnSelectedItems.length} selected
+                    </span>
+                  </div>
+                  <div className="divide-y divide-border">
+                    {moveReturnSelectedItems.map((item) => {
+                      const serials = getItemDisplaySerials(item);
+
+                      return (
+                        <div
+                          key={String(item.id)}
+                          className="flex items-start justify-between gap-4 px-4 py-3 text-sm"
+                        >
+                          <div className="min-w-0">
+                            <div className="font-semibold">
+                              Component ID: {getReturnableComponentId(item)}
+                            </div>
+                            <div className="mt-1 break-words text-xs text-muted-foreground">
+                              Type: {item.component_master_type || item.component_type || item.component_category || item.category || "—"}
+                            </div>
+                            <div className="mt-1 break-words text-xs text-muted-foreground">
+                              Serial: {serials.join(", ") || "Not recorded"}
+                            </div>
+                            <div className="mt-1 text-xs font-medium text-indigo-700">
+                              Ready to Return
+                            </div>
+                          </div>
+                          <span className="shrink-0 rounded-md bg-muted px-2 py-1 text-xs font-semibold">
+                            Qty {Number(item.quantity || 0)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                    {!moveReturnSelectedItems.length && (
+                      <div className="px-4 py-5 text-sm text-muted-foreground">
+                        No components are selected. Close this dialog and select the components to return.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {!moveReturnDialog.assemblyReturn && (
               <div>
                 <label className="mb-1.5 block text-sm font-semibold">
                   Return Date{" "}
@@ -2437,6 +3099,7 @@ export default function ReturnablePage() {
                   className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm outline-none focus:border-primary"
                 />
               </div>
+              )}
 
               <div>
                 <label className="mb-1.5 block text-sm font-semibold">
@@ -2444,7 +3107,7 @@ export default function ReturnablePage() {
                 </label>
 
                 <textarea
-                  rows={4}
+                  rows={moveReturnDialog.assemblyReturn ? 3 : 4}
                   value={
                     moveReturnRemarks
                   }
@@ -2454,7 +3117,11 @@ export default function ReturnablePage() {
                     );
                     setMoveReturnError("");
                   }}
-                  placeholder="Enter return remarks"
+                  placeholder={
+                    moveReturnDialog.assemblyReturn
+                      ? "Add remarks for the selected components"
+                      : "Enter return remarks"
+                  }
                   className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2.5 text-sm outline-none focus:border-primary"
                 />
               </div>
@@ -2466,7 +3133,9 @@ export default function ReturnablePage() {
               )}
 
               <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-300">
-                This only hands the issued item back to Inventory. Engineer/Admin does not perform QC here. Inventory will receive a notification and the item will appear in Inventory → Returned as QC Pending.
+                {moveReturnDialog.assemblyReturn
+                  ? "The selected components will move to Inventory → Returned for QC. Other issued components will remain unchanged."
+                  : "This only hands the issued item back to Inventory. Engineer/Admin does not perform QC here. Inventory will receive a notification and the item will appear in Inventory → Returned as QC Pending."}
               </div>
             </div>
 
@@ -2491,13 +3160,20 @@ export default function ReturnablePage() {
                 }
                 disabled={
                   moveReturnProcessing ||
-                  !moveReturnDate
+                  (!moveReturnDialog.assemblyReturn &&
+                    !moveReturnDate) ||
+                  (moveReturnDialog.assemblyReturn &&
+                    moveReturnSelectedItems.length === 0)
                 }
                 className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50"
               >
                 {moveReturnProcessing
-                  ? "Moving..."
-                  : "Move to Return"}
+                  ? moveReturnDialog.assemblyReturn
+                    ? "Returning..."
+                    : "Moving..."
+                  : moveReturnDialog.assemblyReturn
+                    ? "Return"
+                    : "Move to Return"}
               </button>
             </div>
           </div>
@@ -2510,15 +3186,21 @@ export default function ReturnablePage() {
             <div className="flex items-start justify-between gap-4 border-b border-border pb-4">
               <div>
                 <h2 className="text-xl font-semibold">
-                  Returnable Details
+                  {details.assemblyReturn
+                    ? "Assembly Return Details"
+                    : "Returnable Details"}
                 </h2>
 
                 <p className="mt-1 text-sm text-muted-foreground">
                   {details.mrNumber}
                   {" · "}
-                  {formatPurpose(
-                    details.purpose,
-                  )}
+                  {details.assemblyReturn
+                    ? normalizeStatus(details.requestType) === "BOM"
+                      ? details.customizedBom
+                        ? "Customised BOM"
+                        : "BOM"
+                      : "R&D"
+                    : formatPurpose(details.purpose)}
                   {" · "}
                   {details.mode ===
                   "DRONE"
@@ -2546,7 +3228,7 @@ export default function ReturnablePage() {
 
                 <div className="mt-1 font-semibold">
                   {getStatusLabel(
-                    getGroupStatus(
+                    getDisplayedGroupStatus(
                       details,
                     ),
                   )}
@@ -2565,7 +3247,7 @@ export default function ReturnablePage() {
 
               <div className="rounded-xl border border-border p-3">
                 <div className="text-xs uppercase text-muted-foreground">
-                  Returnable Date
+                  {details.assemblyReturn ? "Return Date" : "Returnable Date"}
                 </div>
 
                 <div className="mt-1 font-semibold">
@@ -2599,31 +3281,96 @@ export default function ReturnablePage() {
             </div>
 
             <div className="mt-5 overflow-hidden rounded-xl border border-border">
-              <div className="grid grid-cols-[1.6fr_0.8fr_0.6fr] bg-muted/40 px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">
-                <div>Component</div>
-                <div>Category</div>
+              <div className={`grid ${details.assemblyReturn && canMoveToReturn ? "grid-cols-[0.4fr_0.9fr_1.1fr_0.75fr_0.9fr_0.45fr]" : "grid-cols-[0.9fr_1.1fr_0.75fr_0.9fr_0.45fr]"} bg-muted/40 px-4 py-3 text-xs font-semibold uppercase text-muted-foreground`}>
+                {details.assemblyReturn && canMoveToReturn && (
+                  <label className="flex cursor-pointer items-center gap-2 normal-case">
+                    <input
+                      type="checkbox"
+                      checked={
+                        getUnreturnedAssemblyItems(details).length > 0 &&
+                        moveReturnSelectedIds.length === getUnreturnedAssemblyItems(details).length
+                      }
+                      onChange={(event) => {
+                        setMoveReturnSelectedIds(
+                          event.target.checked
+                            ? getUnreturnedAssemblyItems(details).map((item) => String(item.id))
+                            : [],
+                        );
+                      }}
+                      className="size-4 accent-primary"
+                    />
+                    Select all
+                  </label>
+                )}
+                <div>Component ID</div>
+                <div>Serial Number</div>
+                <div>Component Type</div>
+                <div>Return Status</div>
                 <div>Qty</div>
               </div>
 
               {details.items.length ? (
                 details.items.map(
                   (item) => {
+                    const assemblyMetadata = getUsageMetadata(item);
+                    const assemblyUnitNumber = Number(
+                      assemblyMetadata.assembly_unit_number || 0,
+                    );
+                    const assemblyUnitCount = Number(
+                      assemblyMetadata.assembly_unit_count || 0,
+                    );
+
                     return (
                       <div
                         key={item.id}
-                        className="grid grid-cols-[1.6fr_0.8fr_0.6fr] border-t border-border px-4 py-3 text-sm"
+                        className={`grid ${details.assemblyReturn && canMoveToReturn ? "grid-cols-[0.4fr_0.9fr_1.1fr_0.75fr_0.9fr_0.45fr]" : "grid-cols-[0.9fr_1.1fr_0.75fr_0.9fr_0.45fr]"} items-center gap-3 border-t border-border px-4 py-3 text-sm`}
                       >
-                        <div className="font-medium">
-                          {getReturnableComponentId(
-                            item,
-                          )}
+                        {details.assemblyReturn && canMoveToReturn && (
+                          <div>
+                            {Boolean(item.issued_date) && !Boolean(item.received_date) && (
+                              <input
+                                type="checkbox"
+                                checked={moveReturnSelectedSet.has(String(item.id))}
+                                onChange={(event) => {
+                                  const itemId = String(item.id);
+                                  setMoveReturnSelectedIds((previous) => {
+                                    const selected = new Set(previous.map(String));
+                                    if (event.target.checked) selected.add(itemId);
+                                    else selected.delete(itemId);
+                                    return Array.from(selected);
+                                  });
+                                }}
+                                aria-label={`Select ${getComponentLabel(item)} to return`}
+                                className="size-4 accent-primary"
+                              />
+                            )}
+                          </div>
+                        )}
+                        <div className="break-words font-mono text-xs font-semibold">
+                          {getReturnableComponentId(item)}
+                          {details.assemblyReturn &&
+                            assemblyUnitNumber > 0 &&
+                            assemblyUnitCount > 1 && (
+                              <div className="mt-1 text-xs font-normal text-muted-foreground">
+                                Unit {assemblyUnitNumber} of {assemblyUnitCount}
+                              </div>
+                            )}
+                        </div>
+
+                        <div className="break-words font-mono text-xs text-muted-foreground">
+                          {getItemDisplaySerials(item).join(", ") || "—"}
                         </div>
 
                         <div>
-                          {item.component_category ||
+                          {item.component_master_type ||
                             item.component_type ||
+                            item.component_category ||
                             item.category ||
                             "-"}
+                        </div>
+
+                        <div className="text-xs font-medium">
+                          {getAssemblyReturnStatus(item)}
                         </div>
 
                         <div>
@@ -2667,7 +3414,7 @@ export default function ReturnablePage() {
                 </div>
 
                 <div className="grid grid-cols-[1.5fr_1.1fr_0.8fr_1.8fr] bg-muted/20 px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
-                  <div>Component</div>
+                  <div>Component Type</div>
                   <div>Serial Number</div>
                   <div>QC Result</div>
                   <div>Remarks</div>
@@ -2701,9 +3448,11 @@ export default function ReturnablePage() {
                             className="grid grid-cols-[1.5fr_1.1fr_0.8fr_1.8fr] items-center gap-3 border-t border-border px-4 py-3 text-sm"
                           >
                             <div className="font-medium">
-                              {getReturnableComponentId(
-                                item,
-                              )}
+                              {item.component_master_type ||
+                                item.component_type ||
+                                item.component_category ||
+                                item.category ||
+                                "Component"}
                             </div>
 
                             <div className="font-mono text-xs font-semibold">
@@ -2749,10 +3498,12 @@ export default function ReturnablePage() {
             ) && (
               <div className="mt-6 rounded-xl border border-primary/30 bg-primary/5 p-4">
                 <div className="font-semibold">
-                  Ready to Return
+                  {details.assemblyReturn ? "Select Components to Return" : "Ready to Return"}
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Inventory has issued this Returnable item. Engineer/Admin can now move it back to Inventory Returned.
+                  {details.assemblyReturn
+                    ? "Select all or individual issued component lines above. Only selected components will move to Inventory QC."
+                    : "Inventory has issued this Returnable item. Engineer/Admin can now move it back to Inventory Returned."}
                 </p>
                 <div className="mt-3 flex justify-end">
                   <button
@@ -2763,9 +3514,13 @@ export default function ReturnablePage() {
                         details,
                       );
                     }}
+                    disabled={
+                      details.assemblyReturn &&
+                      moveReturnSelectedIds.length === 0
+                    }
                     className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground"
                   >
-                    Move to Return
+                    {details.assemblyReturn ? "Return" : "Move to Return"}
                   </button>
                 </div>
               </div>
@@ -2837,6 +3592,70 @@ export default function ReturnablePage() {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {componentListDetails && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/55 p-4">
+          <div className="max-h-[85vh] w-full max-w-3xl overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-border p-5">
+              <div>
+                <h2 className="text-lg font-semibold">Assembly Components</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Component type, specification, ID, serial, and return status
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setComponentListDetails(null)}
+                className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+              >
+                Close
+              </button>
+            </div>
+            <div className="max-h-[65vh] overflow-auto">
+              <div className="grid grid-cols-[1fr_1.3fr_0.8fr_1.1fr_0.9fr] gap-3 bg-muted/40 px-5 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <div>Component Type</div>
+                <div>Specification</div>
+                <div>Component ID</div>
+                <div>Serial Number</div>
+                <div>Return Status</div>
+              </div>
+              {componentListDetails.items.map((item, index) => (
+                <div
+                  key={`${item.id || item.component_code || "component"}-${index}`}
+                  className="grid grid-cols-[1fr_1.3fr_0.8fr_1.1fr_0.9fr] gap-3 border-t border-border px-5 py-3 text-sm"
+                >
+                  <div className="break-words font-medium">
+                    {item.component_master_type || item.component_type || item.component_category || item.category || "—"}
+                  </div>
+                  <div className="break-words text-muted-foreground">
+                    {item.component_specifications ||
+                      item.specifications ||
+                      item.specification ||
+                      "—"}
+                  </div>
+                  <div className="break-words font-mono text-xs font-semibold">
+                    {item.component_code ||
+                      item.component?.component_id ||
+                      item.component_id ||
+                      "—"}
+                  </div>
+                  <div className="break-words font-mono text-xs text-muted-foreground">
+                    {getItemDisplaySerials(item).join(", ") || "—"}
+                  </div>
+                  <div className="text-xs font-medium">
+                    {getAssemblyReturnStatus(item)}
+                  </div>
+                </div>
+              ))}
+              {!componentListDetails.items.length && (
+                <div className="px-5 py-8 text-center text-sm text-muted-foreground">
+                  No component details are available.
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -2913,9 +3732,10 @@ export default function ReturnablePage() {
             </div>
 
             <div className="mt-5 overflow-hidden rounded-xl border border-border">
-              <div className="grid grid-cols-[1.55fr_1.1fr_1.2fr_2fr] bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <div>Component</div>
+              <div className="grid grid-cols-[1fr_1.1fr_0.9fr_1.2fr_1.8fr] bg-muted/40 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <div>Component ID</div>
                 <div>Serial Number</div>
+                <div>Component Type</div>
                 <div>QC Result</div>
                 <div>Remarks</div>
               </div>
@@ -2924,9 +3744,9 @@ export default function ReturnablePage() {
                 (row) => (
                   <div
                     key={row.key}
-                    className="grid grid-cols-[1.55fr_1.1fr_1.2fr_2fr] items-center gap-3 border-t border-border px-4 py-3 text-sm"
+                    className="grid grid-cols-[1fr_1.1fr_0.9fr_1.2fr_1.8fr] items-center gap-3 border-t border-border px-4 py-3 text-sm"
                   >
-                    <div className="font-medium">
+                    <div className="break-words font-mono text-xs font-semibold">
                       {row.component_label}
                     </div>
 
@@ -2945,6 +3765,10 @@ export default function ReturnablePage() {
                           </div>
                         </div>
                       )}
+                    </div>
+
+                    <div className="break-words text-xs">
+                      {row.component_type}
                     </div>
 
                     <div className="flex flex-wrap gap-2">

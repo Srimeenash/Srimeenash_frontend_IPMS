@@ -1588,12 +1588,14 @@ export default function InventoryNotifications() {
         );
 
         /*
-         * For a mixed Procurement MR, offer QC-passed quantity first.
-         * After it is provided and the modal refreshes, the reserved
-         * In-Store quantity becomes the next default action.
+         * A partially issued MR can stay INVENTORY_PENDING after inward QC
+         * passes the purchased components. Offer those QC-passed units first
+         * even in that state; after they are issued and the modal refreshes,
+         * any remaining reserved In-Store quantity becomes the next action.
          */
         const shouldProvidePurchasedFirst =
           [
+            "INVENTORY_PENDING",
             "QC_CHECKED",
             "PROJECT_INVENTORY_READY",
           ].includes(routeStatus) &&

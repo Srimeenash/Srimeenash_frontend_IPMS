@@ -277,13 +277,14 @@ export function Sidebar() {
         {
           // Keep existing route.
           to: "/component-usage",
-          label: "Returnable",
+          label: "In Assembly",
           icon: Wrench,
 
           roles: [
             "admin",
             "manager",
             "procurement",
+            "finance",
             "inventory",
             "engineer",
             "management",

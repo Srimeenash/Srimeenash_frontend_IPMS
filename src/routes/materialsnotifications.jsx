@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../AuthContext";
 import { PageShell, PageHeader } from "@/components/app/PageShell";
 import { StatusBadge } from "@/components/app/DataTable";
@@ -320,6 +320,11 @@ const role = useMemo(
   const isAdmin =
     role.includes("admin");
   const navigate = useNavigate();
+  const location = useLocation();
+  const canPrepareRestore =
+    isProcurement ||
+    isAdmin ||
+    role.includes("inventory");
   const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("MR");
@@ -383,7 +388,6 @@ const role = useMemo(
   const [restoreSubmitting, setRestoreSubmitting] = useState(false);
   const [restoreHistoryLoading, setRestoreHistoryLoading] = useState(false);
   const [restoreForm, setRestoreForm] = useState({
-    vendorId: "",
     requestedDate: "",
     expectedDeliveryDate: "",
     roundOff: "0",
@@ -1407,6 +1411,7 @@ const hydrateQcFailedNotification = async (
       reference.split(":", 2)[1];
 
     const outward =
+      notification?.sourcePayload ||
       await fetchNotificationDetailCached(
         `/outward/${encodeURIComponent(
           outwardId,
@@ -1700,6 +1705,7 @@ const openReturnableRestoreApproval = (row) => {
         ).trim(),
         quantity,
         uom: String(item?.uom || masterComponent?.uom || masterComponent?.unit_of_measurements || masterComponent?.unit || masterComponent?.unit_of_measure || "").trim(),
+        vendorId: "",
         unitPrice: "",
         discount: "0",
         gstPercentage: "",
@@ -1717,7 +1723,6 @@ const openReturnableRestoreApproval = (row) => {
 
   setActiveRestoreNotification(row);
   setRestoreForm({
-    vendorId: "",
     requestedDate: getLocalDateInputValue(),
     expectedDeliveryDate: "",
     roundOff: "0",
@@ -1727,6 +1732,35 @@ const openReturnableRestoreApproval = (row) => {
   setShowRestoreApprovalModal(true);
   void loadRestorePurchaseHistory(items);
 };
+
+useEffect(() => {
+  const restoreRequest =
+    location.state?.openReturnableRestore;
+
+  if (!restoreRequest || !canPrepareRestore) {
+    return;
+  }
+
+  openReturnableRestoreApproval(restoreRequest);
+  navigate(
+    {
+      pathname: location.pathname,
+      search: location.search,
+      hash: location.hash,
+    },
+    {
+      replace: true,
+      state: null,
+    },
+  );
+}, [
+  canPrepareRestore,
+  location.hash,
+  location.pathname,
+  location.search,
+  location.state,
+  navigate,
+]);
 
 const updateRestoreLine = (index, field, value) => {
   setRestoreForm((previous) => ({
@@ -1741,14 +1775,6 @@ const submitReturnableRestoreApproval = async (event) => {
   event.preventDefault();
   if (!activeRestoreNotification || restoreSubmitting) return;
 
-  const vendor = vendors.find(
-    (item) => String(item?.id ?? "") === String(restoreForm.vendorId),
-  );
-  if (!vendor) {
-    alert("Select a vendor before sending this Restore request to Finance.");
-    return;
-  }
-
   const expectedDeliveryDate = String(restoreForm.expectedDeliveryDate || "").trim();
   if (!restoreForm.requestedDate || !expectedDeliveryDate) {
     alert("Enter both the requested date and expected delivery date.");
@@ -1758,6 +1784,7 @@ const submitReturnableRestoreApproval = async (event) => {
   const items = restoreForm.items.map((item) => ({
     component_id: item.componentId,
     component_code: item.componentCode,
+    vendor_id: item.vendorId,
     quantity: item.quantity,
     unit_price: item.unitPrice,
     discount: item.discount || "0",
@@ -1766,6 +1793,24 @@ const submitReturnableRestoreApproval = async (event) => {
     freight_gst_percentage: item.freightGstPercentage || "0",
     uom: item.uom || "",
   }));
+  const componentWithoutVendor = items.find(
+    (item) =>
+      !item.vendor_id ||
+      !vendors.some(
+        (vendor) =>
+          String(vendor?.id ?? "") === String(item.vendor_id),
+      ),
+  );
+  if (componentWithoutVendor) {
+    const component = restoreForm.items.find(
+      (item) => item.componentId === componentWithoutVendor.component_id,
+    );
+    alert(
+      `Select an active vendor for ${component?.componentName || component?.componentCode || "each failed component"}.`,
+    );
+    return;
+  }
+
   if (
     items.some(
       (item) =>
@@ -1795,18 +1840,7 @@ const submitReturnableRestoreApproval = async (event) => {
     return;
   }
 
-  const addressParts = [
-    vendor?.address,
-    vendor?.city,
-    vendor?.state,
-    vendor?.pincode,
-  ].map((value) => String(value || "").trim()).filter(Boolean);
-
   const payload = {
-    vendor_id: vendor?.id,
-    vendor_name: vendor?.name || vendor?.vendor_name,
-    gstin: vendor?.gst_number || vendor?.gstin || "",
-    location: addressParts.join(", "),
     requested_date: restoreForm.requestedDate,
     expected_delivery_date: expectedDeliveryDate,
     round_off: restoreForm.roundOff || "0",
@@ -2191,6 +2225,20 @@ const rejectQcFailedReplacement = async (
 const removeQcFailedNotification = async (
   row,
 ) => {
+  if (row?.isFallbackRestore) {
+    setQcFailedNotifications((previous) =>
+      previous.filter(
+        (item) =>
+          !(
+            item?.isFallbackRestore &&
+            String(item?.sourceId || "") ===
+              String(row?.sourceId || "")
+          ),
+      ),
+    );
+    return;
+  }
+
   const notificationId =
     row?.id;
 
@@ -2283,6 +2331,7 @@ const loadNotifications = async (
       requestData,
       notificationData,
       purchaseOrderData,
+      restoreOutwardData,
     ] = await Promise.all([
       fetchAllNotificationPagesShared(
         `/materialrequest/material-requests/?page_size=${NOTIFICATION_FETCH_PAGE_SIZE}`,
@@ -2307,6 +2356,22 @@ const loadNotifications = async (
           forceRefresh,
         },
       ).catch(() => []),
+
+      isProcurement
+        ? fetchAllNotificationPagesShared(
+            `/outward/?page_size=${NOTIFICATION_FETCH_PAGE_SIZE}`,
+            {
+              cache: "no-store",
+              forceRefresh,
+            },
+          ).catch((error) => {
+            console.warn(
+              "Unable to load approved Restore Outward records for Procurement:",
+              error,
+            );
+            return [];
+          })
+        : Promise.resolve([]),
     ]);
 
     const list = Array.isArray(requestData)
@@ -2322,6 +2387,11 @@ const loadNotifications = async (
       Array.isArray(purchaseOrderData)
         ? purchaseOrderData
         : purchaseOrderData?.results || [];
+
+    const restoreOutwardList =
+      Array.isArray(restoreOutwardData)
+        ? restoreOutwardData
+        : restoreOutwardData?.results || [];
 
     setExistingPurchaseOrders(
       purchaseOrderList,
@@ -2376,8 +2446,104 @@ const loadNotifications = async (
           ),
         );
 
+      const notifiedOutwardReferences =
+        new Set(
+          hydratedQcFailed
+            .map((notification) =>
+              String(
+                notification?.reference_id ||
+                  notification?.referenceId ||
+                  "",
+              ).trim().toUpperCase(),
+            )
+            .filter(Boolean),
+        );
+
+      const pendingRestoreOutwards =
+        restoreOutwardList.filter((outward) => {
+          const outwardId =
+            outward?.id ??
+            outward?.pk ??
+            outward?.outward_id;
+          const metadata =
+            outward?.inventory_allocations &&
+            typeof outward.inventory_allocations === "object" &&
+            !Array.isArray(outward.inventory_allocations)
+              ? outward.inventory_allocations
+              : {};
+          const workflow = String(
+            metadata.workflow || "",
+          )
+            .trim()
+            .toUpperCase();
+          const decision = String(
+            metadata.manager_disposition_decision ||
+              metadata.reorder_choice ||
+              "",
+          )
+            .trim()
+            .toUpperCase();
+          const restorePoNumbers =
+            Array.isArray(metadata.restore_po_numbers)
+              ? metadata.restore_po_numbers
+              : [];
+          const restoreStatus = String(
+            metadata.procurement_restore_status ||
+              outward?.restore_workflow_status ||
+              "",
+          )
+            .trim()
+            .toUpperCase();
+          const reference = `OUTWARD:${outwardId}`.toUpperCase();
+
+          return (
+            outwardId !== undefined &&
+            outwardId !== null &&
+            outwardId !== "" &&
+            workflow === "RETURNABLE_COMPONENT_QC_V1" &&
+            decision === "YES" &&
+            !metadata.restore_po_number &&
+            restorePoNumbers.length === 0 &&
+            ![
+              "RESTORE_PO_RAISED",
+              "RESTORE_COMPLETED",
+              "RESTORE_RECEIVED_QC_PENDING",
+              "RESTORE_PARTIALLY_RECEIVED",
+              "RESTORE_QC_FAILED",
+              "REJECTED",
+              "MANAGER_REJECTED",
+              "FINANCE_REJECTED",
+            ].includes(restoreStatus) &&
+            !notifiedOutwardReferences.has(reference)
+          );
+        });
+
+      const fallbackRestoreNotifications =
+        await Promise.all(
+          pendingRestoreOutwards.map((outward) => {
+            const outwardId =
+              outward?.id ??
+              outward?.pk ??
+              outward?.outward_id;
+
+            return hydrateQcFailedNotification({
+              id: `restore-outward-${outwardId}`,
+              category: "QC_FAILED",
+              receiver: "PROCUREMENT",
+              reference_id: `OUTWARD:${outwardId}`,
+              status: "PENDING_PROCUREMENT",
+              is_read: false,
+              isFallbackRestore: true,
+              sourcePayload: outward,
+            });
+          }),
+        );
+
       setQcFailedNotifications(
-        hydratedQcFailed,
+        [
+          ...hydratedQcFailed,
+          ...fallbackRestoreNotifications,
+        ],
       );
     } else {
       setQcFailedNotifications(
@@ -6805,7 +6971,7 @@ Totals items:
                   Prepare restore purchase
                 </h2>
                 <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-400">
-                  Enter the supplier, delivery dates, and pricing for the failed quantity. Finance must approve this request before Procurement can mark the purchase order as ordered.
+                  Assign a vendor and pricing to each failed component. Components with the same vendor are grouped into one purchase order; each PO requires Finance approval before it can be ordered.
                 </p>
               </div>
               <button
@@ -6831,41 +6997,12 @@ Totals items:
                   <div>
                     <h3 className="text-sm font-semibold">Supplier and delivery</h3>
                     <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                      Choose the vendor and confirm the order dates.
+                      Assign a vendor to each failed component and confirm the order dates.
                     </p>
                   </div>
                 </div>
 
-                <div className="grid gap-4 md:grid-cols-3">
-                  <label className="block space-y-1.5">
-                    <span className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">
-                      Vendor <span className="text-rose-600">Required</span>
-                    </span>
-                    <select
-                      required
-                      value={restoreForm.vendorId}
-                      onChange={(event) =>
-                        setRestoreForm((previous) => ({
-                          ...previous,
-                          vendorId: event.target.value,
-                        }))
-                      }
-                      className="h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm font-normal outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-950 dark:focus:ring-indigo-950/60"
-                    >
-                      <option value="">Select vendor</option>
-                      {vendors.map((vendor) => {
-                        const vendorId = vendor?.id;
-                        const vendorName = vendor?.name || vendor?.vendor_name || "";
-                        if (!vendorId || !vendorName) return null;
-                        return (
-                          <option key={String(vendorId)} value={String(vendorId)}>
-                            {vendorName}
-                          </option>
-                        );
-                      })}
-                    </select>
-                  </label>
-
+                <div className="grid gap-4 md:grid-cols-2">
                   <label className="block space-y-1.5">
                     <span className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">
                       Requested date <span className="text-rose-600">Required</span>
@@ -6986,6 +7123,35 @@ Totals items:
                         </div>
 
                         <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3 sm:p-5">
+                          <label className="block space-y-1.5">
+                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                              Component vendor <span className="text-rose-600">*</span>
+                            </span>
+                            <select
+                              required
+                              value={item.vendorId}
+                              onChange={(event) =>
+                                updateRestoreLine(index, "vendorId", event.target.value)
+                              }
+                              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-950 dark:focus:ring-indigo-950/60"
+                            >
+                              <option value="">Select vendor</option>
+                              {vendors.map((vendor) => {
+                                const vendorId = vendor?.id;
+                                const vendorName = vendor?.name || vendor?.vendor_name || "";
+                                if (!vendorId || !vendorName) return null;
+                                return (
+                                  <option key={String(vendorId)} value={String(vendorId)}>
+                                    {vendorName}
+                                  </option>
+                                );
+                              })}
+                            </select>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                              Components assigned to the same vendor are grouped into one PO.
+                            </p>
+                          </label>
+
                           <label className="block space-y-1.5">
                             <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
                               Unit price (₹) <span className="text-rose-600">*</span>

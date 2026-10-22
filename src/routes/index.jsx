@@ -31,22 +31,17 @@ import {
 import { cn } from "@/lib/utils";
 import config from "@/config"; // ✅ your API endpoints
 import { fetchAuthenticatedJson } from "@/api";
-
 const HIDDEN_PURCHASE_ORDER_IDS_STORAGE_KEY =
   "dream-to-life-hidden-purchase-order-ids";
-
 function getHiddenPurchaseOrderIds() {
   if (typeof window === "undefined") return [];
-
   try {
     const stored = window.localStorage.getItem(
       HIDDEN_PURCHASE_ORDER_IDS_STORAGE_KEY,
     );
-
     const values = stored
       ? JSON.parse(stored)
       : [];
-
     return Array.isArray(values)
       ? values.map(String).filter(Boolean)
       : [];
@@ -58,12 +53,10 @@ function getHiddenPurchaseOrderIds() {
     return [];
   }
 }
-
 function filterVisiblePurchaseOrders(orders) {
   const hiddenIds = new Set(
     getHiddenPurchaseOrderIds(),
   );
-
   return (Array.isArray(orders) ? orders : []).filter(
     (order) => {
       const id = String(
@@ -71,20 +64,16 @@ function filterVisiblePurchaseOrders(orders) {
           order?.purchase_order_id ??
           "",
       );
-
       return !id || !hiddenIds.has(id);
     },
   );
 }
-
-
 const KPI_CONFIG = [
   { icon: "dollar", tone: "success", label: "Expenditure" },
   { icon: "box", tone: "violet", label: "Inventory Value" },
   { icon: "clipboard", tone: "info", label: "Active Projects" },
   { icon: "bell", tone: "warning", label: "Low Stock Alerts" },
 ];
-
 function formatCurrency(value) {
   return new Intl.NumberFormat("en-IN", {
     style: "currency",
@@ -92,7 +81,67 @@ function formatCurrency(value) {
     maximumFractionDigits: 2,
   }).format(Number(value) || 0);
 }
-
+function readComponentDisplayValue(value) {
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value).trim();
+  }
+  if (Array.isArray(value)) {
+    return value.map(readComponentDisplayValue).find(Boolean) || "";
+  }
+  if (value && typeof value === "object") {
+    for (const key of [
+      "component_name",
+      "componentName",
+      "component",
+      "name",
+      "label",
+      "title",
+      "display_name",
+      "displayName",
+      "value",
+      "specification",
+      "specifications",
+      "component_code",
+      "code",
+      "component_type",
+      "componentType",
+      "component_type_name",
+      "componentTypeName",
+      "type_name",
+      "typeName",
+    ]) {
+      const displayValue = readComponentDisplayValue(value[key]);
+      if (displayValue) return displayValue;
+    }
+  }
+  return "";
+}
+function getComponentMasterField(item, fieldNames) {
+  const records = [
+    item,
+    item?.component,
+    item?.component_obj,
+    item?.component_details,
+    item?.component_data,
+    item?.componentInfo,
+    item?.component_info,
+    item?.component_master,
+    item?.master_component,
+  ].filter((record) => record && typeof record === "object");
+  for (const record of records) {
+    for (const fieldName of fieldNames) {
+      const value = record[fieldName];
+      if (Array.isArray(value) && value.length) return value;
+      if (value && typeof value === "object" && readComponentDisplayValue(value)) {
+        return value;
+      }
+      if (value !== null && value !== undefined && String(value).trim()) {
+        return value;
+      }
+    }
+  }
+  return "";
+}
 function normalizeLowStockItem(item) {
   if (!item || typeof item !== "object") return null;
   const component_name =
@@ -105,14 +154,14 @@ function normalizeLowStockItem(item) {
   return {
     id,
     component_name,
+    specification: item.specification || item.specifications || item.component_specifications || "",
+    component_type: item.component_type || item.componentType || item.type || "",
     stock,
     source: item.source || "computed",
   };
 }
-
 function mergeLowStockItems(...lists) {
   const merged = new Map();
-
   lists.flatMap((list) => (Array.isArray(list) ? list : [])).forEach((item) => {
     const normalized = normalizeLowStockItem(item);
     if (!normalized) return;
@@ -121,10 +170,8 @@ function mergeLowStockItems(...lists) {
       merged.set(key, normalized);
     }
   });
-
   return Array.from(merged.values()).sort((a, b) => (a.stock ?? 0) - (b.stock ?? 0));
 }
-
 const iconMap = {
   box: Box,
   dollar: DollarSign,
@@ -151,7 +198,6 @@ const chartColors = [
   "var(--chart-5)",
   "var(--info)",
 ];
-
 export default function Dashboard() {
   const { user } = useAuth();
   const [userName, setUserName] = useState("User");
@@ -166,20 +212,55 @@ export default function Dashboard() {
   const [showLowStockPopup, setShowLowStockPopup] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
   const [newLowStock, setNewLowStock] = useState({
+    component_id: "",
     component_name: "",
+    specification: "",
+    component_type: "",
     quantity: "",
   });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const wrapperRef = React.useRef(null);
-
+  const selectedLowStockComponent = componentsList.find(
+    (item) => String(item.id) === String(newLowStock.component_id),
+  );
+  const getLowStockDropdownOptions = (...values) =>
+    Array.from(
+      new Set(
+        values
+          .flatMap((value) => (Array.isArray(value) ? value : [value]))
+          .map((value) =>
+            value && typeof value === "object"
+              ? value.value || value.label || value.name || ""
+              : value,
+          )
+          .map((value) => String(value || "").trim())
+          .filter(Boolean),
+      ),
+    );
+  const lowStockSpecificationOptions = selectedLowStockComponent
+    ? getLowStockDropdownOptions(
+        selectedLowStockComponent.specification,
+        selectedLowStockComponent.specifications,
+        selectedLowStockComponent.component_specifications,
+        selectedLowStockComponent.componentSpecification,
+        selectedLowStockComponent.specs,
+        selectedLowStockComponent.spec,
+      )
+    : [];
+  const lowStockComponentTypeOptions = selectedLowStockComponent
+    ? getLowStockDropdownOptions(
+        selectedLowStockComponent.component_type,
+        selectedLowStockComponent.componentType,
+        selectedLowStockComponent.component_type_name,
+        selectedLowStockComponent.type,
+      )
+    : [];
   const INVENTORY_REMOVED_KEYS_STORAGE_KEY = "dream-to-life-inventory-removed-keys";
   const INVENTORY_ISSUED_KEYS_STORAGE_KEY = "dream-to-life-inventory-issued-keys";
-
   const computeInventoryValue = async () => {
     try {
       let totalValue = 0;
-
       // Load removed inventory keys from localStorage
       let removedKeys = [];
       try {
@@ -189,54 +270,44 @@ export default function Dashboard() {
         removedKeys = [];
       }
       const removedSet = new Set(removedKeys.map(String));
-
       // Add up inventory/inventory/ items
       try {
         const url = `${config.baseURL}/inventory/inventory/?page_size=500`;
         const data = await fetchAuthenticatedJson(url).catch(() => null);
         const list = Array.isArray(data) ? data : data?.results || [];
-
         const value = list.reduce((sum, item) => {
           // Skip if this item was removed locally
           const itemId = String(item.id || item.inventory_code || item.code || "");
           if (itemId && removedSet.has(itemId)) return sum;
-
           const qty = Number(item.quantity ?? item.qty ?? item.quantity_received ?? 1) || 1;
           const total = Number(item.total_price ?? item.totalPrice ?? 0);
           const unit = Number(item.price ?? item.unit_price ?? 0);
           if (total > 0) return sum + total;
           return sum + qty * unit;
         }, 0);
-
         totalValue += value || 0;
       } catch (e) {
         // ignore inventory endpoint errors
       }
-
       // Add up QC passed rows from inward entries
       try {
         const inwardUrl = `${config.baseURL}/inward/?page_size=500`;
         const inwardData = await fetchAuthenticatedJson(inwardUrl).catch(() => null);
         const inwardList = Array.isArray(inwardData) ? inwardData : inwardData?.results || [];
-
         const inwardValue = inwardList.reduce((sum, entry) => {
           const passedRows = Array.isArray(entry.passedRows)
             ? entry.passedRows
             : Array.isArray(entry.qc_passed_rows)
               ? entry.qc_passed_rows
               : [];
-
           if (!passedRows.length) return sum;
-
           // Filter out removed QC rows by serial number
           const activeRows = passedRows.filter((row) => {
             const serial = String(row?.serialNumber || row?.serial_number || "");
             if (!serial) return true;
             return !removedSet.has(`serial-${serial}`) && !removedSet.has(serial);
           });
-
           if (!activeRows.length) return sum;
-
           const lineItems = Array.isArray(entry.line_items) ? entry.line_items : [];
           let grandTotal = 0;
           if (lineItems.length > 0) {
@@ -244,31 +315,25 @@ export default function Dashboard() {
           } else {
             grandTotal = Number(entry.grand_total ?? entry.grandTotal ?? entry.total_price ?? 0) || 0;
           }
-
           const qtyReceived = Number(entry.quantity_received || entry.quantity || 0) || 0;
           if (!qtyReceived || !grandTotal) return sum;
-
           const perUnit = grandTotal / qtyReceived;
           return sum + perUnit * activeRows.length;
         }, 0);
-
         totalValue += inwardValue || 0;
       } catch (e) {
         // ignore inward endpoint errors
       }
-
       return totalValue;
     } catch (e) {
       return 0;
     }
   };
-
   const handleStorageChange = async (ev) => {
     if (!ev) return;
     const isStorageEvent = ev?.type === "storage" && (ev.key === INVENTORY_REMOVED_KEYS_STORAGE_KEY || ev.key === INVENTORY_ISSUED_KEYS_STORAGE_KEY);
     const isCustomEvent = ev?.type === "inventory:changed";
     if (!isStorageEvent && !isCustomEvent) return;
-
     try {
       const value = await computeInventoryValue();
       setKpis((prev) => prev.map((kp) => (kp.label === "Inventory Value" ? { ...kp, value: formatCurrency(value) } : kp)));
@@ -276,7 +341,6 @@ export default function Dashboard() {
       // ignore
     }
   };
-
   const fetchManualLowStock = async () => {
     try {
       const raw = await fetchAuthenticatedJson(`${config.baseURL}/dashboard/manual-low-stock/`);
@@ -289,24 +353,31 @@ export default function Dashboard() {
       return [];
     }
   };
-
   const handleSaveLowStock = async () => {
-    const componentName = newLowStock.component_name?.trim();
-    const quantity = Number(newLowStock.quantity);
-
+    const componentName = String(newLowStock?.component_name || "").trim();
+    const quantity = Number(newLowStock?.quantity);
     if (!componentName || Number.isNaN(quantity) || quantity < 0) {
       return;
     }
-
     try {
       await fetchAuthenticatedJson(`${config.baseURL}/dashboard/manual-low-stock/`, {
         method: "POST",
-        body: JSON.stringify({ component_name: componentName, quantity }),
+        body: JSON.stringify({
+          component_id: newLowStock.component_id || null,
+          component_name: componentName,
+          specification: newLowStock.specification || "",
+          component_type: newLowStock.component_type || "",
+          quantity,
+        }),
       });
-
       await fetchManualLowStock();
-
-      setNewLowStock({ component_name: "", quantity: "" });
+      setNewLowStock({
+        component_id: "",
+        component_name: "",
+        specification: "",
+        component_type: "",
+        quantity: "",
+      });
       setShowDropdown(false);
       setShowLowStockPopup(false);
     } catch (error) {
@@ -314,14 +385,11 @@ export default function Dashboard() {
       alert("Could not save low stock item. Please try again.");
     }
   };
-
   async function handleDeleteLowStock(item) {
     if (!item) return;
-
     if (item.source !== "backend") {
       return;
     }
-
     try {
       await fetchAuthenticatedJson(`${config.baseURL}/dashboard/manual-low-stock/${encodeURIComponent(item.id)}/`, {
         method: "DELETE",
@@ -332,22 +400,17 @@ export default function Dashboard() {
       alert("Could not delete low stock item. Please try again.");
     }
   }
-
   useEffect(() => {
     function handleClickOutside(event) {
       if (wrapperRef.current && !wrapperRef.current.contains(event.target)) {
         setShowDropdown(false);
       }
     }
-
     document.addEventListener("mousedown", handleClickOutside);
-
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
-
   useEffect(() => {
     if (!user) return;
-
     setUserName(
       user.employee_name || user.full_name || user.username || user.name || user.email || "User",
     );
@@ -355,19 +418,21 @@ export default function Dashboard() {
       user.role || user.designation || user.user_type || user.group || user.type || "Employee",
     );
   }, [user]);
-
   useEffect(() => {
     async function loadDashboardData() {
       setLoading(true);
       setLoadError(null);
-
       const normalizeResponse = (data) => {
         if (!data) return [];
         if (Array.isArray(data)) return data;
-        if (Array.isArray(data.results)) return data.results;
+        for (const key of ["results", "data", "items", "components"]) {
+          if (Array.isArray(data[key])) return data[key];
+        }
+        if (data.data && typeof data.data === "object") {
+          return normalizeResponse(data.data);
+        }
         return [];
       };
-
       try {
         const [purchaseResult, projectResult, componentResult] = await Promise.allSettled([
           fetchAuthenticatedJson(`${config.baseURL}/procurement/purchase-orders/`).catch((error) => {
@@ -383,18 +448,11 @@ export default function Dashboard() {
             return null;
           }),
         ]);
-
         const backendOrders = normalizeResponse(
           purchaseResult.status === "fulfilled"
             ? purchaseResult.value
             : null,
         );
-
-        /*
-         * Use only POs that are still visible in the Purchase Orders page.
-         * If the backend still returns an old/soft-deleted PO, its ID is
-         * filtered here before any dashboard total is calculated.
-         */
         const orders =
           filterVisiblePurchaseOrders(
             backendOrders,
@@ -405,26 +463,82 @@ export default function Dashboard() {
         const components = normalizeResponse(
           componentResult.status === "fulfilled" ? componentResult.value : null,
         );
-
         const backendLowStockItems = await fetchManualLowStock();
-
         setComponentsList(
-          components.map((item) => ({
-            id: item.id,
-            name: item.name || item.component_name,
-          })),
+        components.map((item, index) => {
+          const name = readComponentDisplayValue(
+            getComponentMasterField(item, [
+              "component_name",
+              "componentName",
+              "component",
+              "name",
+              "item_name",
+              "itemName",
+              "part_name",
+              "partName",
+              "title",
+              "description",
+            ]),
+          );
+          const componentCode = readComponentDisplayValue(
+            getComponentMasterField(item, [
+              "component_code",
+              "componentCode",
+              "code",
+              "part_number",
+              "partNumber",
+              "sku",
+              "component_id",
+              "componentId",
+            ]),
+          );
+          const id = readComponentDisplayValue(
+            getComponentMasterField(item, [
+              "id",
+              "pk",
+              "component_master_id",
+              "componentMasterId",
+            ]),
+          ) || componentCode || name || `component-${index + 1}`;
+          return {
+            id,
+            name: name || componentCode || `Component record ${index + 1}`,
+            component_name: name || componentCode,
+            component_code: componentCode,
+            specification: getComponentMasterField(item, [
+              "specification",
+              "specifications",
+              "component_specification",
+              "component_spec",
+              "component_specifications",
+              "componentSpecification",
+              "componentSpecifications",
+              "specification_name",
+              "specificationName",
+              "specs",
+              "spec",
+            ]),
+            component_type: getComponentMasterField(item, [
+              "component_type",
+              "componentType",
+              "component_type_name",
+              "componentTypeName",
+              "type_name",
+              "typeName",
+              "type",
+            ]),
+          };
+        }),
         );
         const totalSpend = orders.reduce(
           (sum, order) => sum + Number(order.total || order.amount || 0),
           0,
         );
-
         const inventoryValue = components.reduce((sum, item) => {
           const qty = Number(item.stock_quantity || item.quantity || 0);
           const unitPrice = Number(item.unit_price || item.price || 0);
           return sum + qty * unitPrice;
         }, 0);
-
         // If components endpoint doesn't provide inventory value, fallback to inward totals
         let fallbackInventoryValue = inventoryValue;
         if (!fallbackInventoryValue) {
@@ -433,7 +547,6 @@ export default function Dashboard() {
               `${config.baseURL}/inward/`,
             );
             const inwardList = Array.isArray(inwardData) ? inwardData : inwardData?.results || [];
-
             const inwardValue = inwardList.reduce((sum, entry) => {
               const lineItems = Array.isArray(entry.line_items)
                 ? entry.line_items
@@ -449,7 +562,6 @@ export default function Dashboard() {
                 grandTotal =
                   Number((entry.grand_total ?? entry.grandTotal ?? entry.total_price) || 0) || 0;
               }
-
               const qtyReceived = Number(entry.quantity_received || entry.quantity || 0) || 0;
               const passed = Array.isArray(entry.passedRows)
                 ? entry.passedRows
@@ -461,22 +573,18 @@ export default function Dashboard() {
               const perUnit = grandTotal / qtyReceived;
               return sum + perUnit * passedCount;
             }, 0);
-
             fallbackInventoryValue = inwardValue;
           } catch (e) {
             // ignore fallback errors
           }
         }
-
         const activeProjectCount = projects.filter((project) =>
           ["PLANNED", "IN_PROGRESS", "ONGOING", "ACTIVE"].includes(
             String(project.status || "").toUpperCase(),
           ),
         ).length;
-
         const lowStockAlertCount = backendLowStockItems.length;
         const lowStockItems = backendLowStockItems.slice(0, 4);
-
         const spendByMonth = orders.reduce((acc, order) => {
           const date = new Date(order.po_date || order.date || order.created_at);
           if (!date || Number.isNaN(date.getTime())) return acc;
@@ -484,7 +592,6 @@ export default function Dashboard() {
           acc[key] = (acc[key] || 0) + Number(order.total || order.amount || 0);
           return acc;
         }, {});
-
         const series = Array.from({ length: 8 }, (_, index) => {
           const date = new Date();
           date.setMonth(date.getMonth() - (7 - index));
@@ -494,13 +601,11 @@ export default function Dashboard() {
             cost: spendByMonth[key] || 0,
           };
         });
-
         const categoryMap = components.reduce((acc, item) => {
           const category = item.category || item.component_category || "Misc";
           acc[category] = (acc[category] || 0) + 1;
           return acc;
         }, {});
-
         setKpis([
           {
             icon: "dollar",
@@ -531,7 +636,6 @@ export default function Dashboard() {
             delta: "",
           },
         ]);
-
         // Update KPI using live inventory endpoint totals when available
         try {
           const liveValue = await computeInventoryValue();
@@ -539,10 +643,8 @@ export default function Dashboard() {
         } catch (e) {
           // ignore
         }
-
         setProcurementSeries(series);
         setCategoryBreakdown(Object.entries(categoryMap).map(([name, value]) => ({ name, value })));
-
         setRecentActivity(
           orders
             .sort(
@@ -571,9 +673,7 @@ export default function Dashboard() {
         setLoading(false);
       }
     }
-
     loadDashboardData();
-
     // Listen to storage and custom inventory events so KPI updates when inventory is modified elsewhere in the app
     window.addEventListener(
       "storage",
@@ -583,16 +683,13 @@ export default function Dashboard() {
       "inventory:changed",
       handleStorageChange,
     );
-
     const handleProcurementChanged = () => {
       void loadDashboardData();
     };
-
     window.addEventListener(
       "procurement:changed",
       handleProcurementChanged,
     );
-
     return () => {
       window.removeEventListener(
         "storage",
@@ -608,7 +705,6 @@ export default function Dashboard() {
       );
     };
   }, []);
-
   useEffect(() => {
     const mergedLowStock = mergeLowStockItems(backendLowStock);
     setLowStock(mergedLowStock.slice(0, 4));
@@ -620,7 +716,6 @@ export default function Dashboard() {
       ),
     );
   }, [backendLowStock]);
-
   return (
     <PageShell>
       <PageHeader
@@ -632,9 +727,7 @@ export default function Dashboard() {
           </div>
         }
       />
-
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-2">
+<div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-2">
         {kpis.map((k) => {
           const Icon = iconMap[k.icon] || Box;
           const tone = toneMap[k.tone] || toneMap.info;
@@ -662,11 +755,8 @@ export default function Dashboard() {
           );
         })}
       </div>
-
-      {/* Procurement + Inventory */}
-      <div className="mt-6 grid grid-cols-1 xl:grid-cols-3 gap-4">
-        {/* Procurement Chart */}
-        <div className="xl:col-span-2 rounded-2xl border border-border bg-card p-5">
+<div className="mt-6 grid grid-cols-1 xl:grid-cols-3 gap-4">
+<div className="xl:col-span-2 rounded-2xl border border-border bg-card p-5">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h3 className="font-semibold">Monthly Procurement Cost</h3>
@@ -720,9 +810,7 @@ export default function Dashboard() {
             </ResponsiveContainer>
           </div>
         </div>
-
-        {/* Inventory Pie */}
-        <div className="rounded-2xl border border-border bg-card p-5">
+<div className="rounded-2xl border border-border bg-card p-5">
           <h3 className="font-semibold mb-1">Inventory by Category</h3>
           <p className="text-xs text-muted-foreground mb-4">Component distribution</p>
           <div className="h-72">
@@ -753,14 +841,10 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
-
-      {/* Recent Activity + Low Stock */}
-      <div className="mt-6 grid grid-cols-1 xl:grid-cols-2 gap-4">
-        {/* Recent Activity */}
-        <div className="rounded-2xl border border-border bg-card p-5">
+<div className="mt-6 grid grid-cols-1 xl:grid-cols-2 gap-4">
+<div className="rounded-2xl border border-border bg-card p-5">
           <h3 className="font-semibold mb-1">Recent Activity</h3>
           <p className="text-xs text-muted-foreground mb-4">Latest material requests and updates</p>
-
           <div className="space-y-3">
             {recentActivity.length > 0 ? (
               recentActivity.map((item, index) => (
@@ -779,7 +863,6 @@ export default function Dashboard() {
   {item.description || item.created_at}
 </div>
                   </div>
-
 <span
   className={cn(
     "inline-flex min-w-[110px] justify-center rounded-full border px-4 py-2 text-xs font-bold uppercase tracking-wider shadow-sm",
@@ -807,18 +890,21 @@ export default function Dashboard() {
             )}
           </div>
         </div>
-
-        {/* Low Stock Components */}
-        <div className="rounded-2xl border border-border bg-card p-5">
+<div className="rounded-2xl border border-border bg-card p-5">
           <div className="flex items-center justify-between mb-1">
             <div className="flex items-center gap-2">
               <AlertTriangle className="size-5 text-warning" />
               <h3 className="font-semibold">Low Stock Components</h3>
             </div>
-
             <button
               onClick={() => {
-                setNewLowStock({ component_name: "", quantity: "" });
+                setNewLowStock({
+                  component_id: "",
+                  component_name: "",
+                  specification: "",
+                  component_type: "",
+                  quantity: "",
+                });
                 setShowLowStockPopup(true);
               }}
               className="rounded-md bg-primary p-2 text-white hover:bg-primary/90"
@@ -827,9 +913,7 @@ export default function Dashboard() {
               <Plus size={16} />
             </button>
           </div>
-
           <p className="text-xs text-muted-foreground mb-4">Components nearing reorder level</p>
-
           <div className="space-y-3">
             {lowStock.length > 0 ? (
               lowStock.map((item, index) => (
@@ -841,12 +925,10 @@ export default function Dashboard() {
                     <div className="font-medium">
                       {item.component_name || item.name || `Component ${index + 1}`}
                     </div>
-
                     <div className="text-xs text-muted-foreground">
                       Current Stock: {item.stock ?? item.quantity ?? item.current_stock ?? 0}
                     </div>
                   </div>
-
                   <div className="flex items-center gap-2">
                     <span className="rounded-full bg-warning px-3 py-1 text-xs font-semibold text-white border border-warning/70 shadow-sm dark:bg-warning dark:text-white dark:border-warning/70">
                       Low Stock
@@ -868,7 +950,6 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
-
       {showLowStockPopup && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-2xl border border-border bg-card shadow-2xl animate-in fade-in zoom-in-95">
@@ -879,7 +960,6 @@ export default function Dashboard() {
                   Select a component and enter the available quantity.
                 </p>
               </div>
-
               <button
                 onClick={() => setShowLowStockPopup(false)}
                 className="rounded-full p-2 hover:bg-muted/50"
@@ -888,54 +968,134 @@ export default function Dashboard() {
                 ✕
               </button>
             </div>
-
             <div className="space-y-5 p-6">
               <div>
                 <label className="mb-2 block text-sm font-medium text-muted-foreground">Component</label>
-
                 <input
                   type="text"
                   placeholder="Search Component..."
                   value={newLowStock.component_name}
                   onFocus={() => setShowDropdown(true)}
                   onChange={(e) => {
-                    setNewLowStock({
-                      ...newLowStock,
+                    setNewLowStock((previous) => ({
+                      ...previous,
+                      component_id: "",
                       component_name: e.target.value,
-                    });
+                      specification: "",
+                      component_type: "",
+                    }));
                     setShowDropdown(true);
                   }}
                   className="w-full rounded-lg border border-border bg-background px-3 py-2 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
                 />
-
                 {showDropdown && (
                   <div className="mt-2 max-h-44 overflow-y-auto rounded-lg border border-border bg-card shadow-sm">
                     {componentsList
-                      .filter((item) =>
-                        item.name?.toLowerCase().includes(newLowStock.component_name.toLowerCase()),
-                      )
+                      .filter((item) => {
+                        const searchText = String(
+                          newLowStock?.component_name || "",
+                        ).toLowerCase();
+                        const label = `${item.name || ""} ${item.component_code || ""}`
+                          .trim()
+                          .toLowerCase();
+                        return label.includes(searchText);
+                      })
                       .map((item) => (
                         <div
                           key={item.id}
                           onClick={() => {
-                            setNewLowStock({
-                              ...newLowStock,
-                              component_name: item.name,
-                            });
+                            const specifications = getLowStockDropdownOptions(
+                              item.specification,
+                              item.specifications,
+                              item.component_specifications,
+                              item.componentSpecification,
+                              item.specs,
+                              item.spec,
+                            );
+                            const componentTypes = getLowStockDropdownOptions(
+                              item.component_type,
+                              item.componentType,
+                              item.component_type_name,
+                              item.type,
+                            );
+                            setNewLowStock((previous) => ({
+                              ...previous,
+                              component_id: item.id == null ? "" : String(item.id),
+                              component_name: item.component_name || "",
+                              specification: specifications[0] || "",
+                              component_type: componentTypes[0] || "",
+                            }));
                             setShowDropdown(false);
                           }}
                           className="cursor-pointer border-b border-border px-3 py-2 hover:bg-muted/50"
                         >
                           {item.name}
+                          {item.component_code && item.component_code !== item.name
+                            ? ` · ${item.component_code}`
+                            : ""}
                         </div>
                       ))}
                   </div>
                 )}
               </div>
-
+              <div>
+                <label className="mb-2 block text-sm font-medium text-muted-foreground">
+                  Specification
+                </label>
+                <select
+                  aria-label="Specification"
+                  value={newLowStock.specification}
+                  disabled={!selectedLowStockComponent || lowStockSpecificationOptions.length === 0}
+                  onChange={(e) =>
+                    setNewLowStock((previous) => ({
+                      ...previous,
+                      specification: e.target.value,
+                    }))
+                  }
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <option value="">
+                    {selectedLowStockComponent
+                      ? "No specification available"
+                      : "Select a component first"}
+                  </option>
+                  {lowStockSpecificationOptions.map((specification) => (
+                    <option key={specification} value={specification}>
+                      {specification}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-muted-foreground">
+                  Component Type
+                </label>
+                <select
+                  aria-label="Component Type"
+                  value={newLowStock.component_type}
+                  disabled={!selectedLowStockComponent || lowStockComponentTypeOptions.length === 0}
+                  onChange={(e) =>
+                    setNewLowStock((previous) => ({
+                      ...previous,
+                      component_type: e.target.value,
+                    }))
+                  }
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <option value="">
+                    {selectedLowStockComponent
+                      ? "No component type available"
+                      : "Select a component first"}
+                  </option>
+                  {lowStockComponentTypeOptions.map((componentType) => (
+                    <option key={componentType} value={componentType}>
+                      {componentType}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <div>
                 <label className="mb-2 block text-sm font-medium text-muted-foreground">Quantity</label>
-
                 <input
                   type="number"
                   min="0"
@@ -951,7 +1111,6 @@ export default function Dashboard() {
                 />
               </div>
             </div>
-
             <div className="flex justify-end gap-3 border-t px-6 py-4">
               <button
                 onClick={() => setShowLowStockPopup(false)}
@@ -960,7 +1119,6 @@ export default function Dashboard() {
               >
                 Cancel
               </button>
-
 <button
   className="rounded-lg px-5 py-2 font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
   style={{ backgroundColor: "#E85D75" }}
@@ -969,9 +1127,9 @@ export default function Dashboard() {
   type="button"
   onClick={handleSaveLowStock}
   disabled={
-    !newLowStock.component_name.trim() ||
-    !newLowStock.quantity ||
-    Number(newLowStock.quantity) < 0
+    !String(newLowStock?.component_name || "").trim() ||
+    !String(newLowStock?.quantity ?? "").trim() ||
+    Number(newLowStock?.quantity) < 0
   }
 >
   Save

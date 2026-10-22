@@ -146,13 +146,7 @@ const INWARD_OUTWARD_ROLES = [
 ];
 
 
-const COMPONENT_USAGE_ROLES = [
-  "admin",
-  "manager",
-  "procurement",
-  "inventory",
-  "engineer",
-];
+const COMPONENT_USAGE_ROLES = ALL_IPMS_ROLES;
 
 
 const PROJECT_ROLES = [
