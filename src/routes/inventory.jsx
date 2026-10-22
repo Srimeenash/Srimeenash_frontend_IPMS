@@ -500,6 +500,48 @@ const isAllowedInDroneRequest = (request = {}) => {
   );
 };
 
+// A finished Assembly MR must be discoverable in In Drone even when the
+// finished-assembly-components endpoint has no rows yet. Keep these audit
+// records separate from physical DroneInstance inventory and sale actions.
+const FINISHED_ASSEMBLY_STATUSES = new Set([
+  "MR_COMPLETED",
+  "COMPLETED",
+  "ASSEMBLY_COMPLETED",
+  "FINISHED",
+]);
+
+const getNormalAssemblyMrType = (request = {}) => {
+  if (isFromScrapRequest(request)) return "";
+
+  const requestType = String(
+    request?.request_type || request?.requestType || request?.type || "",
+  ).trim().toUpperCase();
+
+  if (["RETURNABLE", "RETAIL_SALES"].includes(requestType)) return "";
+  if (["R&D", "RD"].includes(requestType)) return "R&D";
+
+  const isCustom = [
+    "CUSTOM_BOM", "CUSTOMIZED_BOM", "CUSTOMISED_BOM",
+  ].includes(requestType) || [true, "true", 1, "1"].includes(request?.customized_bom)
+    || [true, "true", 1, "1"].includes(request?.customised_bom);
+
+  if (isCustom) return "Customized BOM";
+
+  if (requestType === "BOM" || request?.bom || request?.bom_number || request?.bom_code) {
+    return "BOM";
+  }
+
+  return "";
+};
+
+const isCompletedNormalAssemblyMr = (request = {}) => {
+  const status = String(
+    request?.status || request?.material_request_status ||
+    request?.mr_status || request?.approval_status || "",
+  ).trim().toUpperCase();
+  return FINISHED_ASSEMBLY_STATUSES.has(status) && Boolean(getNormalAssemblyMrType(request));
+};
+
 // The In Store export needs actual Excel row groups. XML Spreadsheet (.xls)
 // cannot retain those groups, so write a small standards-based .xlsx here
 // without adding a package dependency to the existing application.
@@ -754,6 +796,7 @@ export default function InventoryPage() {
   const [qcInventory, setQcInventory] = useState([]);
   const [scrapEntries, setScrapEntries] = useState(() => getStoredScrapEntries());
   const [approvedRequests, setApprovedRequests] = useState([]);
+  const [completedAssemblyRequests, setCompletedAssemblyRequests] = useState([]);
   const [assemblyComponentUnits, setAssemblyComponentUnits] = useState([]);
   const [assemblyComponentUnitsError, setAssemblyComponentUnitsError] =
     useState("");
@@ -3347,18 +3390,38 @@ export default function InventoryPage() {
     return labels;
   };
 
-  const inDroneTypeCounts = { All: approvedRequests.length };
+  const inDroneTypeCounts = {
+    All: approvedRequests.length + completedAssemblyRequests.length,
+  };
   inDroneTypes.forEach((type) => {
     inDroneTypeCounts[type] = 0;
   });
 
-  approvedRequests.forEach((request) => {
+  [...approvedRequests, ...completedAssemblyRequests].forEach((request) => {
     getInDroneTypeLabels(request).forEach((type) => {
       if (Object.prototype.hasOwnProperty.call(inDroneTypeCounts, type)) {
         inDroneTypeCounts[type] += 1;
       }
     });
   });
+
+  const filteredCompletedAssemblyRequests =
+    inDroneTypeFilter === "All"
+      ? completedAssemblyRequests
+      : completedAssemblyRequests.filter((request) =>
+          getInDroneTypeLabels(request).includes(inDroneTypeFilter),
+        );
+
+  const filteredFinishedAssemblyComponentUnits =
+    inDroneTypeFilter === "All"
+      ? assemblyComponentUnits
+      : assemblyComponentUnits.filter((unit) => {
+          const mrNumber = String(unit?.material_request_id || "").trim().toUpperCase();
+          return filteredCompletedAssemblyRequests.some((request) =>
+            [request?.material_request_id, request?.request_id, request?.mr_id]
+              .some((value) => String(value || "").trim().toUpperCase() === mrNumber),
+          );
+        });
 
   const filteredInDroneRequests =
     inDroneTypeFilter === "All"
@@ -8165,6 +8228,7 @@ serials_list: manualSerials.length ? manualSerials : buildManualInventorySerials
           "projectInventory",
           "purchasedIssued",
           "componentUsage",
+          "assemblyFinished",
         ].includes(changeType)
       ) {
         return;
@@ -8184,7 +8248,9 @@ serials_list: manualSerials.length ? manualSerials : buildManualInventorySerials
             changeType ===
               "projectInventory" ||
             changeType ===
-              "purchasedIssued"
+              "purchasedIssued" ||
+            changeType ===
+              "assemblyFinished"
           ) {
             /*
              * A PO/QC issue changes ProjectInventory.issued_purchased_serials.
@@ -9827,6 +9893,11 @@ issued_to:
         }),
       ]);
       setAssemblyComponentUnits(finishedAssemblyComponents);
+      // Source of truth for the completed MR list is the MR endpoint,
+      // not the optional finished component-unit endpoint.
+      setCompletedAssemblyRequests(
+        list.filter(isCompletedNormalAssemblyMr),
+      );
 
       /*
        * ----------------------------------------------------------
@@ -10886,12 +10957,10 @@ issued_to:
           item?.request_type || item?.requestType || "",
         ).trim().toUpperCase();
 
-        // BOM/R&D MRs are represented as component units after Finish, not
-        // as physical DroneInstance rows in the In Drone drone table.
-        if (
-          ["BOM", "R&D"].includes(requestType) &&
-          !isFromScrapRequest(item)
-        ) {
+        // Normal BOM, Customised BOM and R&D are tracked as finished
+        // Assembly MR audit records, not as sellable physical drone rows.
+        // From-Scrap and Retail Sales retain their existing workflows.
+        if (getNormalAssemblyMrType(item)) {
           return false;
         }
 
@@ -11771,6 +11840,7 @@ issued_to:
         error,
       );
       setApprovedRequests([]);
+      setCompletedAssemblyRequests([]);
       setAssemblyComponentUnits([]);
       setReturnedRequests([]);
     } finally {
@@ -19364,10 +19434,92 @@ const getRowsForCurrentTab = () => {
             </div>
           )}
 
+          {filteredCompletedAssemblyRequests.length > 0 && (
+            <section className="space-y-3">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">
+                  Completed Assembly Material Requests
+                </h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  BOM, Customised BOM and R&amp;D requests appear here after Finish / Completed.
+                  They are assembly records, not automatically available physical drones for Sale.
+                </p>
+              </div>
+              <div className="in-drone-table">
+                <DataTable
+                  columns={[
+                    {
+                      key: "material_request_id",
+                      header: "MR ID",
+                      render: (row) => (
+                        <button
+                          type="button"
+                          className="in-drone-mr-link text-primary"
+                          onClick={() => openInDroneRequestDetails(row)}
+                          title="View completed material request"
+                        >
+                          {row.material_request_id || row.request_id || row.mr_id || `MR-${row.id}`}
+                        </button>
+                      ),
+                    },
+                    {
+                      key: "project",
+                      header: "Project",
+                      render: (row) =>
+                        (typeof row.project === "object"
+                          ? row.project?.name || row.project?.project_name
+                          : row.project_name || row.project) || "—",
+                    },
+                    {
+                      key: "request_type",
+                      header: "Request Type",
+                      render: (row) => getNormalAssemblyMrType(row) || "—",
+                    },
+                    {
+                      key: "drone_quantity",
+                      header: "Drone Qty",
+                      render: (row) => {
+                        const quantity = Number(
+                          row.drone_quantity ?? row.droneQuantity ?? row.required_quantity ?? 0,
+                        );
+                        return Number.isFinite(quantity) && quantity > 0 ? quantity : "—";
+                      },
+                    },
+                    {
+                      key: "status",
+                      header: "Status",
+                      render: () => (
+                        <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800">
+                          MR Completed
+                        </span>
+                      ),
+                    },
+                    {
+                      key: "details",
+                      header: "Details",
+                      render: (row) => (
+                        <button
+                          type="button"
+                          className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-700 hover:bg-sky-100"
+                          onClick={() => openInDroneRequestDetails(row)}
+                        >
+                          View Details
+                        </button>
+                      ),
+                    },
+                  ]}
+                  rows={filteredCompletedAssemblyRequests}
+                  loading={loadingRequests}
+                  keyField="id"
+                  enableColumnTools
+                />
+              </div>
+            </section>
+          )}
+
           {(initialPageLoading ||
             loadingRequests ||
-            approvedRequests.length > 0 ||
-            assemblyComponentUnits.length > 0) ? (
+            approvedRequests.length > 0) ? (
             <div className="in-drone-table">
             <DataTable
               columns={[
@@ -19762,12 +19914,11 @@ const getRowsForCurrentTab = () => {
   keyField="id"
             />
             </div>
-          ) : (
+          ) : completedAssemblyRequests.length === 0 ? (
             <div className="rounded-3xl border border-border bg-card p-8 text-center text-sm text-muted-foreground">
-              No approved drone material requests found. Approved requests will appear here once
-              they are processed.
+              No issued drone or completed Assembly material requests found.
             </div>
-          )}
+          ) : null}
           {assemblyComponentUnitsError && (
             <div
               role="alert"
@@ -19776,7 +19927,7 @@ const getRowsForCurrentTab = () => {
               {assemblyComponentUnitsError}
             </div>
           )}
-          {assemblyComponentUnits.length > 0 && (
+          {filteredFinishedAssemblyComponentUnits.length > 0 && (
             <section className="mt-6 space-y-3">
               <div>
                 <h3 className="text-sm font-semibold text-foreground">
@@ -19854,7 +20005,7 @@ const getRowsForCurrentTab = () => {
                           : "—",
                     },
                   ]}
-                  rows={assemblyComponentUnits}
+                  rows={filteredFinishedAssemblyComponentUnits}
                   loading={loadingRequests}
                   loadingTitle="Loading finished Assembly components..."
                   loadingDescription="Calculating issued units remaining after Assembly returns."

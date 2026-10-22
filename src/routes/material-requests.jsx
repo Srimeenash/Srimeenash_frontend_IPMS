@@ -965,28 +965,43 @@ function MaterialRequestsPage() {
       .trim()
       .toUpperCase();
 
-    // An explicit decision is authoritative even if an older workflow
-    // field has not been synchronized yet.
+    // A Manager rejection ends the Manager MR approval stage. Some older
+    // responses contain both MANAGER_REJECTED and FINANCE_REJECTED in
+    // status/approval_status. Never let the conflicting Finance value mask
+    // an explicit Manager rejection in the MR Status AND Approval columns.
     const statuses = [workflowStatus, approvalStatus];
-    if (statuses.includes("FINANCE_REJECTED")) return "FINANCE_REJECTED";
     if (statuses.includes("MANAGER_REJECTED")) return "MANAGER_REJECTED";
 
+    // For malformed legacy data, use explicit rejection-actor metadata if
+    // present. Do not infer the actor solely from the current user's role.
+    const rejectionRole = String(
+      row?.rejected_by_role ||
+        row?.rejectedByRole ||
+        row?.rejected_by_role_name ||
+        row?.rejectedByRoleName ||
+        row?.latest_approval?.rejected_by_role ||
+        row?.latest_approval?.role ||
+        "",
+    ).trim().toUpperCase();
+    const rejectedBy = String(
+      row?.rejected_by || row?.rejectedBy || "",
+    ).trim().toUpperCase();
+    const actor = rejectionRole || rejectedBy;
+
+    if (statuses.includes("FINANCE_REJECTED")) {
+      // Only override the Finance label with recorded evidence that the
+      // rejection happened at the Manager stage.
+      if (actor === "MANAGER" || actor === "MANAGER_REJECTED" ||
+          rejectionRole.includes("MANAGER")) {
+        return "MANAGER_REJECTED";
+      }
+      return "FINANCE_REJECTED";
+    }
+
     if (statuses.includes("REJECTED")) {
-      // Legacy REJECTED is ambiguous. Resolve only from actual actor metadata;
-      // never assume every rejection came from Finance (or Manager).
-      const actor = String(
-        row?.rejected_by_role ||
-          row?.rejectedByRole ||
-          row?.rejected_by_role_name ||
-          row?.rejectedByRoleName ||
-          row?.rejected_by ||
-          row?.rejectedBy ||
-          row?.latest_approval?.rejected_by_role ||
-          row?.latest_approval?.role ||
-          "",
-      ).toUpperCase();
-      if (actor.includes("FINANCE")) return "FINANCE_REJECTED";
+      // A generic REJECTED does not identify an approval stage on its own.
       if (actor.includes("MANAGER")) return "MANAGER_REJECTED";
+      if (actor.includes("FINANCE")) return "FINANCE_REJECTED";
       return "REJECTED";
     }
 
@@ -6554,7 +6569,10 @@ const displayReadyRequests =
         },
       );
       await loadRequests({ silent: true });
-      window.dispatchEvent(new Event("inventory:changed"));
+      window.dispatchEvent(new CustomEvent("inventory:changed", {
+        detail: { type: "assemblyFinished", materialRequestId: request.id },
+      }));
+      window.dispatchEvent(new Event("materialRequestsUpdated"));
     } catch (error) {
       console.error("Unable to finish Assembly Material Request:", error);
       setFinishActionError(

@@ -873,7 +873,9 @@ const getManagerMrDecisionStatus = (request = {}, notification = {}) => {
   const requestWorkflow = normalize(request?.status);
   const notificationStatus = normalize(notification?.status);
 
-  if ([requestApproval, requestWorkflow].includes("MANAGER_REJECTED")) {
+  // A stage-specific Manager decision from the MR *or its own Manager
+  // notification wins over any inconsistent Finance value left on the MR.
+  if ([requestApproval, requestWorkflow, notificationStatus].includes("MANAGER_REJECTED")) {
     return "MANAGER_REJECTED";
   }
   if ([requestApproval, requestWorkflow].includes("FINANCE_REJECTED")) {
