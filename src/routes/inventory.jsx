@@ -3663,19 +3663,18 @@ export default function InventoryPage() {
   // COMPONENT units (e.g. 15). Never show or sell those as 15 drones.
   const getCompletedAssemblyDroneQuantity = (request = {}) => {
     const type = getNormalAssemblyMrType(request);
-    // BOM's required_quantity is explicitly the drone count in the MR table.
-    // R&D must use only dedicated drone quantity fields, not required_quantity
-    // or component-item counts.
-    const candidates = type === "R&D"
-      ? [request?.drone_quantity, request?.droneQuantity]
-      : [
-          request?.required_quantity,
-          request?.requiredQuantity,
-          request?.drone_quantity,
-          request?.droneQuantity,
-          request?.assembly_quantity,
-          request?.assemblyQuantity,
-        ];
+    // R&D makes components, not physical drones. Even legacy data that
+    // mistakenly set drone_quantity=15 must show Drone Qty 0.
+    if (type === "R&D") return 0;
+    // BOM / Custom BOM required_quantity is the original drone count.
+    const candidates = [
+      request?.required_quantity,
+      request?.requiredQuantity,
+      request?.drone_quantity,
+      request?.droneQuantity,
+      request?.assembly_quantity,
+      request?.assemblyQuantity,
+    ];
     const raw = candidates.find((value) =>
       value !== undefined && value !== null && String(value).trim() !== "",
     );
@@ -4171,11 +4170,6 @@ export default function InventoryPage() {
   const getInDroneTotalDroneQuantity = (request) => {
     if (!request) return 0;
 
-    // In the physical In-Drone table every _01/_02 child is exactly one drone.
-    if (request?.droneInstanceId || request?.drone_instance_id) {
-      return 1;
-    }
-
     const requestType = String(
       request?.request_type ||
         request?.requestType ||
@@ -4185,17 +4179,12 @@ export default function InventoryPage() {
       .trim()
       .toUpperCase();
 
-    if (["R&D", "RD"].includes(requestType)) {
-      const rdDroneQuantity = Number(
-        request?.drone_quantity ??
-          request?.droneQuantity ??
-          0,
-      );
+    // R&D component quantity must never be interpreted as Drone Qty.
+    // Check the parent MR type BEFORE the physical-instance shortcut, too.
+    if (["R&D", "RD"].includes(requestType)) return 0;
 
-      return Number.isFinite(rdDroneQuantity) && rdDroneQuantity > 0
-        ? Math.floor(rdDroneQuantity)
-        : 0;
-    }
+    // Every genuine BOM/Custom BOM _01/_02 child is one physical drone.
+    if (request?.droneInstanceId || request?.drone_instance_id) return 1;
 
     const directQuantity = Number(
       request?.drone_quantity ??

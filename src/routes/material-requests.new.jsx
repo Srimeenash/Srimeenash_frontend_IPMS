@@ -50,7 +50,67 @@ const IN_DRONE_MR_STATUSES = new Set([
   "COMPLETED",
 ]);
 
+// Only BOM and Custom BOM represent assembled physical drones.
+// An R&D MR may request 15 individual components, but its drone quantity is 0.
+// Neither its required_quantity nor legacy DroneInstance rows may turn those
+// component units into physical drones.
+const getPhysicalDroneSourceType = (request = {}) => {
+  const type = String(
+    request?.request_type || request?.requestType || request?.type || "",
+  ).trim().toUpperCase().replace(/[\s-]+/g, "_");
+
+  if (["CUSTOM_BOM", "CUSTOMIZED_BOM", "CUSTOMISED_BOM"].includes(type)) {
+    return "CUSTOM_BOM";
+  }
+  if (type === "BOM") {
+    return [true, 1, "1", "true"].includes(request?.customized_bom) ||
+      [true, 1, "1", "true"].includes(request?.customised_bom)
+      ? "CUSTOM_BOM" : "BOM";
+  }
+  return ""; // R&D, Returnable, Retail Sales and unknown types have no drones here
+};
+
+const getPhysicalDroneMrQuantity = (request = {}) => {
+  if (!getPhysicalDroneSourceType(request)) return 0;
+  // For BOM / Custom BOM, MR required_quantity means number of drones.
+  const raw = request?.required_quantity ?? request?.requiredQuantity ??
+    request?.drone_quantity ?? request?.droneQuantity ??
+    request?.assembly_quantity ?? request?.assemblyQuantity ?? 0;
+  const qty = Number(raw);
+  return Number.isFinite(qty) && qty > 0 ? Math.floor(qty) : 0;
+};
+
+const normalizeDroneStatus = (value) =>
+  String(value ?? "").trim().toUpperCase().replace(/[\s-]+/g, "_");
+
+const isExplicitlySoldOrSaleReserved = (instance = {}) => {
+  const statuses = [
+    instance?.status,
+    instance?.sale_status,
+    instance?.sales_status,
+    instance?.outward_status,
+    instance?.movement_status,
+  ].map(normalizeDroneStatus);
+
+  if (statuses.some((status) =>
+    ["SOLD", "SALE_PENDING", "SALES_PENDING", "RESERVED_FOR_SALE", "DELIVERED"].includes(status)
+  )) return true;
+
+  const soldFlags = [instance?.is_sold, instance?.sold, instance?.sale_completed];
+  if (soldFlags.some((flag) => flag === true || flag === 1 || String(flag).toLowerCase() === "true")) {
+    return true;
+  }
+  if (Number(instance?.sold_quantity ?? instance?.sales_quantity ?? 0) > 0) {
+    return true;
+  }
+  return Boolean(instance?.sold_at || instance?.sale_completed_at);
+};
+
+
 const getExistingDroneRequestTypeLabel = (request = {}) => {
+  const physicalType = getPhysicalDroneSourceType(request);
+  if (physicalType === "CUSTOM_BOM") return "Custom BOM";
+  if (physicalType === "BOM") return "BOM";
   const requestType = String(
     request?.request_type || request?.requestType || "",
   )
@@ -1029,6 +1089,7 @@ const collapseAllBomCategories = () => {
 const [returnablePurpose, setReturnablePurpose] = useState("");
 const [returnableSources, setReturnableSources] = useState([]);
 const [selectedDroneMrId, setSelectedDroneMrId] = useState("");
+const [selectedDroneInstanceId, setSelectedDroneInstanceId] = useState("");
 const [selectedDroneQuantity, setSelectedDroneQuantity] = useState("");
 const [inDroneRequests, setInDroneRequests] = useState([]);
 const [requestRows, setRequestRows] = useState([createEmptyRequestItem()]);
@@ -1068,142 +1129,76 @@ const isDirectDroneReturnable =
 const isCombinedReturnable =
   hasDroneReturnable && isComponentReturnable;
 
-const inDroneMrOptions = inDroneRequests.map((request) => {
-  const mrNumber = String(
-    request?.material_request_id ||
-      request?.request_id ||
-      request?.mr_id ||
-      "",
-  ).trim();
 
-  const droneInstanceId =
-    request?._drone_instance_id ??
-    request?.drone_instance_id ??
-    request?.droneInstanceId ??
-    "";
+// Group only eligible BOM/Custom BOM instances by their source MR.
+// Component-only R&D requests must never appear in this drone dropdown.
+// Physical instances are still selected individually within the source MR.
+const inDroneMrOptions = Array.from(
+  inDroneRequests.reduce((groups, request) => {
+    const mrNumber = String(
+      request?.material_request_id || request?.request_id || request?.mr_id || "",
+    ).trim();
+    if (!mrNumber || !getPhysicalDroneSourceType(request) ||
+        !request?._is_physical_drone_instance) return groups;
 
-  const droneInstanceCode = String(
-    request?._drone_instance_code ||
-      request?.drone_instance_code ||
-      request?.droneInstanceCode ||
-      "",
-  ).trim();
+    const mrKey = mrNumber.toUpperCase();
+    if (!groups.has(mrKey)) {
+      groups.set(mrKey, {
+        mrNumber,
+        project: String(request?.project_name || request?.project || "-").trim() || "-",
+        typeLabel: getExistingDroneRequestTypeLabel(request),
+        droneInstances: [],
+        request,
+      });
+    }
 
-  const droneInstanceSuffix = String(
-    request?._drone_instance_suffix ||
-      request?.suffix ||
-      "",
-  ).trim();
-
-  const displayMrNumber = String(
-    request?._drone_instance_display ||
-      (
-        droneInstanceSuffix
-          ? `${mrNumber} / ${droneInstanceSuffix}`
-          : mrNumber
-      ),
-  ).trim();
-
-  const project = String(
-    request?.project ||
-      request?.project_name ||
-      "-",
-  ).trim() || "-";
-
-  const typeLabel =
-    getExistingDroneRequestTypeLabel(request);
-
-  const availableQuantity = Math.max(
-    Number(
-      request?._in_drone_available_quantity ??
-        request?._in_drone_total_quantity ??
-        1,
-    ) || 0,
-    0,
-  );
-
+    const group = groups.get(mrKey);
+    if (request?._is_physical_drone_instance) {
+      const id = request?._drone_instance_id;
+      const code = String(request?._drone_instance_code || "").trim();
+      const identity = id !== undefined && id !== null && String(id).trim() !== ""
+        ? `INSTANCE:${id}`
+        : code;
+      // Deduplicate by the *physical* instance, not the source MR.
+      if (identity && !group.droneInstances.some((entry) => entry.value === identity)) {
+        group.droneInstances.push({
+          value: identity,
+          label: String(request?._drone_instance_display || code || mrNumber),
+          droneInstanceId: id,
+          droneInstanceCode: code,
+          request,
+        });
+      }
+    }
+    return groups;
+  }, new Map()).values(),
+).map((group) => {
+  const availableQuantity = group.droneInstances.length;
   return {
-    // Use the physical instance as the unique dropdown key.
-    // Two available drones from the same MR (_01 and _02) must remain
-    // independently selectable.
-    value:
-      droneInstanceId !== undefined &&
-      droneInstanceId !== null &&
-      String(droneInstanceId).trim() !== ""
-        ? `INSTANCE:${droneInstanceId}`
-        : droneInstanceCode || displayMrNumber || mrNumber,
-    label: displayMrNumber || mrNumber,
-    mrNumber,
-    displayMrNumber: displayMrNumber || mrNumber,
-    droneInstanceId,
-    droneInstanceCode,
-    droneInstanceSuffix,
-    project,
-    typeLabel,
+    ...group,
+    value: group.mrNumber,
+    displayMrNumber: group.mrNumber,
     availableQuantity,
-    request,
+    label: `${group.mrNumber} — ${group.typeLabel} · ${availableQuantity} available`,
   };
-});
-
-const selectedDroneMrOption =
-  inDroneMrOptions.find(
-    (option) =>
-      String(option.value) ===
-      String(selectedDroneMrId),
-  ) || null;
-
-/*
- * Drone quantity available on the selected completed/In-Drone MR.
- *
- * required_quantity is the normal MR drone quantity. The extra fallbacks keep
- * older API responses compatible.
- */
-const selectedDroneMrTotalQuantity =
-  selectedDroneMrOption?.droneInstanceId
-    ? 1
-    : Math.max(
-        Number(
-          selectedDroneMrOption?.request?.required_quantity ??
-            selectedDroneMrOption?.request?.drone_quantity ??
-            selectedDroneMrOption?.request?.drone_qty ??
-            selectedDroneMrOption?.request?.quantity ??
-            0,
-        ) || 0,
-        0,
-      );
-
-const selectedDroneMrSoldQuantity = Math.max(
-  Number(
-    selectedDroneMrOption?.request?._in_drone_sold_quantity ??
-      0,
-  ) || 0,
-  0,
+}).sort((a, b) =>
+  a.mrNumber.localeCompare(b.mrNumber, undefined, { numeric: true, sensitivity: "base" }),
 );
 
-const selectedDroneMrAvailableQuantity = Math.max(
-  Number(
-    selectedDroneMrOption?.request?._in_drone_available_quantity ??
-      (
-        selectedDroneMrTotalQuantity -
-        selectedDroneMrSoldQuantity
-      ),
-  ) || 0,
-  0,
-);
+const selectedDroneMrOption = inDroneMrOptions.find(
+  (option) => String(option.value) === String(selectedDroneMrId),
+) || null;
 
-const selectedDroneMrUsageSummary =
-  selectedDroneMrOption?.request?._in_drone_usage_summary ||
-  {};
+const selectedDroneInstanceOptions = selectedDroneMrOption?.droneInstances || [];
+const selectedDroneInstanceOption = selectedDroneInstanceOptions.find(
+  (option) => String(option.value) === String(selectedDroneInstanceId),
+) || null;
 
-const selectedDroneMrIsSold =
-  Boolean(
-    selectedDroneMrOption?.request?._in_drone_is_sold,
-  ) ||
-  (
-    selectedDroneMrTotalQuantity > 0 &&
-    selectedDroneMrSoldQuantity >=
-      selectedDroneMrTotalQuantity
-  );
+// Availability counts eligible BOM/Custom BOM physical drones only.
+const selectedDroneMrTotalQuantity = selectedDroneMrOption?.availableQuantity || 0;
+const selectedDroneMrSoldQuantity = 0; // sold physical drones are never selectable
+const selectedDroneMrAvailableQuantity = selectedDroneMrOption?.availableQuantity || 0;
+const selectedDroneMrUsageSummary = {}; // usage is tracked per physical instance
 
 const returnableMaxDate =
   requestType === "RETURNABLE" &&
@@ -1458,130 +1453,81 @@ async function loadNextMaterialRequestId() {
         request?.request_id,
         request?.mr_id,
       ]
-        .filter(
-          (value) =>
-            value !== undefined &&
-            value !== null &&
-            String(value).trim() !== "",
-        )
-        .forEach((value) => {
-          requestByReference.set(
-            String(value).trim().toUpperCase(),
-            request,
-          );
-        });
+        .filter((value) => value !== undefined && value !== null && String(value).trim() !== "")
+        .forEach((value) => requestByReference.set(String(value).trim().toUpperCase(), request));
     });
 
+    const getSourceRequest = (instance = {}) => {
+      const linkedMr = instance?.material_request;
+      const references = [
+        typeof linkedMr === "object" ? linkedMr?.id : linkedMr,
+        typeof linkedMr === "object" ? linkedMr?.material_request_id : null,
+        instance?.material_request_id,
+        instance?.material_request_number,
+        instance?.materialRequestId,
+        instance?.materialRequestNumber,
+      ].filter((value) => value !== undefined && value !== null && String(value).trim() !== "");
+      return references
+        .map((value) => requestByReference.get(String(value).trim().toUpperCase()))
+        .find(Boolean) || null;
+    };
+
     const availablePhysicalDrones = droneInstanceRows
-      .filter(
-        (instance) =>
-          String(instance?.status || "")
-            .trim()
-            .toUpperCase() === "AVAILABLE" &&
-          instance?.returnable_eligible === true,
-      )
+      .filter((instance) => {
+        if (normalizeDroneStatus(instance?.status) !== "AVAILABLE") return false;
+        if (instance?.returnable_eligible !== true) return false;
+        if (isExplicitlySoldOrSaleReserved(instance)) return false;
+
+        const parent = getSourceRequest(instance);
+        // Fail closed when the MR is not found or is an R&D/components MR.
+        if (!getPhysicalDroneSourceType(parent)) return false;
+        const trueDroneQty = getPhysicalDroneMrQuantity(parent);
+        if (trueDroneQty <= 0) return false;
+
+        // Old R&D component quantities may have produced phantom _01..._15.
+        // For BOM / Custom BOM, never display a physical suffix exceeding
+        // the actual drone quantity declared by the MR.
+        const instanceSuffix = String(instance?.suffix || instance?.instance_code || "");
+        const suffixSequence = instanceSuffix.match(/_(\d+)$/)?.[1];
+        const sequence = Number(instance?.sequence ?? suffixSequence ?? 1);
+        return Number.isInteger(sequence) && sequence >= 1 && sequence <= trueDroneQty;
+      })
       .map((instance) => {
-        const instanceReferences = [
-          instance?.material_request,
-          instance?.material_request_id,
-          instance?.material_request_number,
-          instance?.materialRequest,
-          instance?.materialRequestId,
-          instance?.materialRequestNumber,
-        ]
-          .filter(
-            (value) =>
-              value !== undefined &&
-              value !== null &&
-              String(value).trim() !== "",
-          )
-          .map((value) =>
-            String(value).trim().toUpperCase(),
-          );
-
-        const parentRequest =
-          instanceReferences
-            .map((reference) =>
-              requestByReference.get(reference),
-            )
-            .find(Boolean) || null;
-
+        const parentRequest = getSourceRequest(instance);
         const mrNumber = String(
-          instance?.material_request_number ||
-            instance?.materialRequestNumber ||
-            parentRequest?.material_request_id ||
-            parentRequest?.request_id ||
-            parentRequest?.mr_id ||
-            "",
+          instance?.material_request_number || instance?.materialRequestNumber ||
+          parentRequest?.material_request_id || parentRequest?.request_id ||
+          parentRequest?.mr_id || "",
         ).trim();
+        if (!mrNumber) return null;
 
-        if (!mrNumber) {
-          return null;
-        }
-
-        const sequence = Math.max(
-          Number(instance?.sequence || 1) || 1,
-          1,
-        );
-
-        const suffix = String(
-          instance?.suffix ||
-            `_${String(sequence).padStart(2, "0")}`,
-        ).trim();
-
+        const sequence = Math.max(Number(instance?.sequence || 1) || 1, 1);
+        const suffix = String(instance?.suffix || `_${String(sequence).padStart(2, "0")}`).trim();
         const instanceCode = String(
-          instance?.instance_code ||
-            instance?.instanceCode ||
-            `${mrNumber}${suffix}`,
+          instance?.instance_code || instance?.instanceCode || `${mrNumber}${suffix}`,
         ).trim();
 
         return {
-          ...(parentRequest || {}),
+          ...parentRequest,
           material_request_id: mrNumber,
           request_id: mrNumber,
-
           _is_physical_drone_instance: true,
-          _drone_instance_id:
-            instance?.id ??
-            instance?.pk ??
-            "",
+          _drone_instance_id: instance?.id ?? instance?.pk ?? "",
           _drone_instance_code: instanceCode,
           _drone_instance_suffix: suffix,
-          _drone_instance_display:
-            `${mrNumber} / ${suffix}`,
-
-          // One DroneInstance is exactly one physical drone.
-          _in_drone_total_quantity: 1,
-          _in_drone_sold_quantity: 0,
-          _in_drone_sales_reserved_quantity: 0,
-          _in_drone_returnable_quantity: 0,
-          _in_drone_available_quantity: 1,
-          _in_drone_usage_summary: {},
-          _in_drone_is_sold: false,
+          _drone_instance_display: `${mrNumber} / ${suffix}`,
         };
       })
       .filter(Boolean)
-      .sort((left, right) => {
-        const leftLabel = String(
-          left?._drone_instance_display || "",
-        );
-        const rightLabel = String(
-          right?._drone_instance_display || "",
-        );
+      .sort((left, right) =>
+        String(left?._drone_instance_display || "").localeCompare(
+          String(right?._drone_instance_display || ""),
+          undefined, { numeric: true, sensitivity: "base" },
+        ),
+      );
 
-        return leftLabel.localeCompare(
-          rightLabel,
-          undefined,
-          {
-            numeric: true,
-            sensitivity: "base",
-          },
-        );
-      });
-
-    setInDroneRequests(
-      availablePhysicalDrones,
-    );
+    // Never append R&D zero-quantity "reference" entries to Drone dropdown.
+    setInDroneRequests(availablePhysicalDrones);
 
     /*
      * Daily MR numbering:
@@ -2811,6 +2757,11 @@ async function handleSubmit(e) {
     }
 
     if (hasDroneReturnable) {
+      if (selectedDroneMrOption && !selectedDroneInstanceOption) {
+        newErrors.drone_instance = selectedDroneMrAvailableQuantity === 0
+          ? "This MR has no available physical drones. It cannot be moved to Returnable."
+          : "Please select the exact physical drone.";
+      }
       const droneQuantity =
         Number(selectedDroneQuantity);
 
@@ -2823,6 +2774,11 @@ async function handleSubmit(e) {
       ) {
         newErrors.drone_quantity =
           "Please select a Drone Quantity of at least 1.";
+      } else if (
+        selectedDroneInstanceOption && droneQuantity !== 1
+      ) {
+        newErrors.drone_quantity =
+          "Exactly one physical drone may be moved per selection.";
       } else if (
         droneQuantity > selectedDroneMrAvailableQuantity
       ) {
@@ -3057,9 +3013,9 @@ async function handleSubmit(e) {
         material_request_id:
           selectedDroneMrOption?.mrNumber || selectedDroneMrId,
         drone_instance_id:
-          selectedDroneMrOption?.droneInstanceId || undefined,
+          selectedDroneInstanceOption?.droneInstanceId || undefined,
         drone_instance_code:
-          selectedDroneMrOption?.droneInstanceCode || undefined,
+          selectedDroneInstanceOption?.droneInstanceCode || undefined,
         purpose: returnablePurpose,
         quantity: Number(selectedDroneQuantity),
         return_due_date: form.returnable_date,
@@ -3095,7 +3051,7 @@ async function handleSubmit(e) {
             selectedDroneMrOption?.mrNumber ||
             selectedDroneMrId,
           droneInstanceId:
-            selectedDroneMrOption?.droneInstanceId ||
+            selectedDroneInstanceOption?.droneInstanceId ||
             "",
           refresh: Date.now(),
         },
@@ -3552,10 +3508,12 @@ async function handleSubmit(e) {
                   setReturnablePurpose("");
                   setReturnableSources([]);
                   setSelectedDroneMrId("");
+                  setSelectedDroneInstanceId("");
                   setSelectedDroneQuantity("");
                 } else {
                   setReturnableSources([]);
                   setSelectedDroneMrId("");
+                  setSelectedDroneInstanceId("");
                   setSelectedDroneQuantity("");
                 }
 
@@ -3720,6 +3678,7 @@ async function handleSubmit(e) {
                     nextNeedsChoice ? [] : ["COMPONENTS"],
                   );
                   setSelectedDroneMrId("");
+                  setSelectedDroneInstanceId("");
                   setSelectedDroneQuantity("");
 
                   setErrors((previous) => ({
@@ -3779,12 +3738,14 @@ async function handleSubmit(e) {
                             );
                             if (source === "DRONE" && !checked) {
                               setSelectedDroneMrId("");
+                              setSelectedDroneInstanceId("");
                               setSelectedDroneQuantity("");
                             }
                             setErrors((previous) => ({
                               ...previous,
                               returnable_source: "",
                               drone_mr: "",
+                              drone_instance: "",
                               drone_quantity: "",
                               request_rows: "",
                             }));
@@ -3806,75 +3767,85 @@ async function handleSubmit(e) {
               </Field>
             )}
 
-          {requestType === "RETURNABLE" &&
-            hasDroneReturnable && (
-              <Field label="Existing Drone / MR" required>
-                <SearchableSelect
-                  name="existing_drone_mr"
-                  options={inDroneMrOptions}
-                  value={selectedDroneMrOption?.label || ""}
-                  placeholder="Search available In-Drone MR / _01..."
-                  onChange={(event) => {
-                    const rawValue = String(
-                      event.target.value || "",
-                    );
 
-                    const selected =
-                      inDroneMrOptions.find(
-                        (option) =>
-                          option.label === rawValue ||
-                          String(option.value) === rawValue,
-                      );
+{requestType === "RETURNABLE" && hasDroneReturnable && (
+  <Field label="Existing Drone / MR" required>
+    <SearchableSelect
+      name="existing_drone_mr"
+      options={inDroneMrOptions}
+      value={selectedDroneMrOption?.label || ""}
+      placeholder="Search available In-Drone MR..."
+      onChange={(event) => {
+        const rawValue = String(event.target.value || "");
+        const selected = inDroneMrOptions.find((option) =>
+          option.label === rawValue || String(option.value) === rawValue,
+        );
+        setSelectedDroneMrId(selected?.value || "");
+        const onlyInstance = selected?.droneInstances?.length === 1
+          ? selected.droneInstances[0]
+          : null;
+        setSelectedDroneInstanceId(onlyInstance?.value || "");
+        setSelectedDroneQuantity(onlyInstance ? "1" : "");
+        setErrors((previous) => ({
+          ...previous, drone_mr: "", drone_instance: "", drone_quantity: "",
+        }));
+      }}
+    />
 
-                    setSelectedDroneMrId(
-                      selected?.value || "",
-                    );
+    {inDroneMrOptions.length === 0 && (
+      <p className="mt-1 text-xs text-amber-600">
+        No available BOM/Custom BOM drones. R&D component-only, sold and sale-pending records are excluded.
+      </p>
+    )}
 
-                    // One dropdown option is one physical DroneInstance.
-                    setSelectedDroneQuantity(
-                      selected?.droneInstanceId
-                        ? "1"
-                        : "",
-                    );
+    {selectedDroneMrOption && (
+      <div className="mt-2 rounded-xl border border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
+        <div className="font-semibold text-foreground">
+          {selectedDroneMrOption.displayMrNumber}
+        </div>
+        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+          <span>Project: {selectedDroneMrOption.project}</span>
+          <span>Type: {selectedDroneMrOption.typeLabel}</span>
+          <span>
+            Available Drone Qty:{" "}
+            <strong className={selectedDroneMrAvailableQuantity > 0
+              ? "text-emerald-600" : "text-amber-600"}>
+              {selectedDroneMrAvailableQuantity}
+            </strong>
+          </span>
+        </div>
+      </div>
+    )}
+    {errors.drone_mr && <p className="mt-1 text-sm text-red-600">{errors.drone_mr}</p>}
+  </Field>
+)}
 
-                    setErrors((previous) => ({
-                      ...previous,
-                      drone_mr: "",
-                    }));
-                  }}
-                />
-
-                {inDroneMrOptions.length === 0 && (
-                  <p className="mt-1 text-xs text-amber-600">
-                    No fresh, available physical drone is currently present in In Drone.
-                  </p>
-                )}
-
-                {selectedDroneMrOption && (
-                  <div className="mt-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                    <span className="font-semibold text-foreground">
-                      {selectedDroneMrOption.displayMrNumber ||
-                        selectedDroneMrOption.mrNumber}
-                    </span>
-                    {" · "}
-                    Project: {selectedDroneMrOption.project}
-                    {" · "}
-                    Type: {selectedDroneMrOption.typeLabel}
-                    {" · "}
-                    Available Drone Qty:{" "}
-                    <span className="font-semibold text-foreground">
-                      {selectedDroneMrAvailableQuantity}
-                    </span>
-                  </div>
-                )}
-
-                {errors.drone_mr && (
-                  <p className="mt-1 text-sm text-red-600">
-                    {errors.drone_mr}
-                  </p>
-                )}
-              </Field>
-            )}
+{requestType === "RETURNABLE" && hasDroneReturnable &&
+  selectedDroneMrOption && selectedDroneMrAvailableQuantity > 1 && (
+    <Field label="Select Physical Drone" required>
+      <SearchableSelect
+        name="existing_drone_instance"
+        options={selectedDroneInstanceOptions}
+        value={selectedDroneInstanceOption?.label || ""}
+        placeholder="Search _01 / _02 / physical drone..."
+        onChange={(event) => {
+          const raw = String(event.target.value || "");
+          const selected = selectedDroneInstanceOptions.find((option) =>
+            option.label === raw || String(option.value) === raw,
+          );
+          setSelectedDroneInstanceId(selected?.value || "");
+          setSelectedDroneQuantity(selected ? "1" : "");
+          setErrors((previous) => ({
+            ...previous, drone_instance: "", drone_quantity: "",
+          }));
+        }}
+      />
+      <p className="mt-1 text-xs text-muted-foreground">
+        Each physical drone is uniquely tracked. Choose one of the {selectedDroneMrAvailableQuantity} available instances.
+      </p>
+      {errors.drone_instance && <p className="mt-1 text-sm text-red-600">{errors.drone_instance}</p>}
+    </Field>
+  )}
 
           {requestType === "RETURNABLE" &&
             hasDroneReturnable &&
@@ -3885,18 +3856,19 @@ async function handleSubmit(e) {
                   min="1"
                   max={
                     selectedDroneMrAvailableQuantity > 0
-                      ? selectedDroneMrAvailableQuantity
+                      ? 1
                       : undefined
                   }
                   step="1"
                   value={selectedDroneQuantity}
                   disabled={
                     selectedDroneMrAvailableQuantity <= 0 ||
-                    Boolean(selectedDroneMrOption?.droneInstanceId)
+                    selectedDroneMrAvailableQuantity > 1 ||
+                    Boolean(selectedDroneInstanceOption)
                   }
                   placeholder={
                     selectedDroneMrAvailableQuantity > 0
-                      ? `Select 1 to ${selectedDroneMrAvailableQuantity}`
+                      ? "1 drone per selected physical instance"
                       : "No Drone Quantity Available"
                   }
                   onChange={(event) => {
@@ -3916,7 +3888,7 @@ async function handleSubmit(e) {
                 {selectedDroneMrTotalQuantity > 0 && (
                   <div className="mt-1 space-y-1 text-xs text-muted-foreground">
                     <p>
-                      Total Drone Qty:{" "}
+                      Available Physical Drones:{" "}
                       <span className="font-semibold text-foreground">
                         {selectedDroneMrTotalQuantity}
                       </span>
