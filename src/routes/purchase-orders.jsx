@@ -4641,8 +4641,12 @@ _jsx(Link, {
 
     let visibleActionStatus = "PENDING_FINANCE";
 
-
-    if (
+    // Completed delivery takes precedence over the saved approval stage.
+    // Keep approval_status intact for the finance approval workflow.
+    if (normalizedStatus === "DELIVERED") {
+      visibleActionStatus = "DELIVERED";
+    }
+    else if (
       normalizedStatus === "MANAGER_REJECTED" ||
       normalizedApprovalStatus === "MANAGER_REJECTED"
     ) {

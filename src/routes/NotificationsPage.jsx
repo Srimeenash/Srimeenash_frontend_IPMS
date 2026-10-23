@@ -5,6 +5,7 @@ import { StatusBadge } from "@/components/app/DataTable";
 import config from "@/config";
 import { fetchAuthenticatedJson } from "@/api";
 import { Loader2 } from "lucide-react";
+import { ensureProcurementNotificationForMr, repairMissingRdProcurementNotifications } from "@/utils/procurementMrNotifications";
 
 
 const NOTIFICATION_FETCH_PAGE_SIZE = 200;
@@ -3554,6 +3555,34 @@ if (isInventory) {
     }
 
     /*
+     * R&D PROCUREMENT NOTIFICATION RECOVERY
+     * ------------------------------------
+     * Some already-approved R&D MRs (for example, an MR that is displayed
+     * as "Sent to Procurement") have no receiver=PROCUREMENT Notification.
+     * This uses the current MR status and deduplicates against the existing
+     * Procurement notifications. It does not change BOM, stock, or PO data.
+     */
+    if (isManager && allMaterialRequests.length > 0) {
+      try {
+        const recovered = await repairMissingRdProcurementNotifications(
+          allMaterialRequests,
+        );
+        if (recovered.created > 0) {
+          console.info("Repaired missing R&D Procurement notifications:", recovered);
+          window.dispatchEvent(new Event("notificationsUpdated"));
+        }
+        if (recovered.failed > 0) {
+          console.warn("Some R&D Procurement notifications could not be repaired:", recovered);
+        }
+      } catch (recoveryError) {
+        console.warn(
+          "Unable to check existing R&D Procurement notifications:",
+          recoveryError,
+        );
+      }
+    }
+
+    /*
      * MANAGER MR FALLBACK
      * -------------------
      * The MaterialRequest row is authoritative for workflow status.
@@ -5023,7 +5052,34 @@ console.log(
   resourceResult,
 );
 
-
+// Keep Procurement notification delivery consistent for BOM, Custom BOM, R&D.
+// Backend MR workflow/status remains authoritative. This is a safe fallback
+// for installations where a Manager-approved R&D MR reaches PROCUREMENT_PENDING
+// without the expected category=MR, receiver=PROCUREMENT Notification row.
+if (resourceType === "MR" && approvalStatus === "MANAGER_APPROVED") {
+  try {
+    const latestMr = await fetchAuthenticatedJson(resourceUrl, {
+      cache: "no-store",
+    });
+    const mrForNotification = {
+      ...(resourceResult || {}),
+      ...(latestMr || {}),
+      id: latestMr?.id ?? resourceResult?.id ?? resourceId,
+    };
+    const created = await ensureProcurementNotificationForMr(mrForNotification);
+    if (created) {
+      console.info("Created missing Procurement MR notification:",
+        mrForNotification.material_request_id || mrForNotification.id);
+      window.dispatchEvent(new Event("notificationsUpdated"));
+    }
+  } catch (routingError) {
+    // MR approval already succeeded. Never submit that approval again.
+    console.error("MR approved; Procurement notification could not be confirmed:",
+      routingError);
+    alert("Material Request was approved, but its Procurement notification " +
+      "could not be verified. Check Procurement notifications and server logs.");
+  }
+}
 
 const isManagerMrFallback =
   resourceType === "MR" &&

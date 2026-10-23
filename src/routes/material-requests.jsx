@@ -10,6 +10,7 @@ import API, { fetchAuthenticatedJson } from "@/api";
 import config from "@/config";
 import { useAuth } from "@/AuthContext";
 import { canViewCosting, canWork } from "@/permissions";
+import { repairMissingRdProcurementNotifications } from "@/utils/procurementMrNotifications";
 
 const MATERIAL_REQUESTS_PAGE_SIZE = 50;
 
@@ -6449,6 +6450,28 @@ const displayReadyRequests =
         (request) => !deletedMrIdsRef.current.has(String(request.id)),
       );
       setRows(visibleRequests);
+
+      /*
+       * Recover pre-existing R&D MRs that have reached PROCUREMENT_PENDING
+       * but do not have a corresponding Procurement notification. Admin can
+       * create notification records already (same as Request Manager Approval).
+       * Errors must not hide or block the Material Requests table.
+       */
+      if (canAdministerMR) {
+        void repairMissingRdProcurementNotifications(visibleRequests)
+          .then((result) => {
+            if (result.created > 0) {
+              console.info("Recovered missing R&D Procurement notices:", result);
+              window.dispatchEvent(new Event("notificationsUpdated"));
+            }
+            if (result.failed > 0) {
+              console.warn("Some R&D Procurement notices need backend repair:", result);
+            }
+          })
+          .catch((error) => {
+            console.warn("Unable to reconcile R&D Procurement notices:", error);
+          });
+      }
 
       /*
        * Engineer is the only role that needs the Move to Return action.

@@ -26,22 +26,42 @@ const IN_DRONE_TABLE_CSS = `
 .in-drone-table .in-drone-quantity-column{width:12%;}
 .in-drone-table .in-drone-cost-column{width:14%;}
 .in-drone-table td>div{min-width:0;max-width:100%;}
-.in-drone-mr-link{display:block;width:100%;padding:0;border:0;background:transparent;text-align:center;font:inherit;font-weight:600;line-height:1.5;overflow-wrap:anywhere;cursor:pointer;}
-.in-drone-mr-link:hover{text-decoration:underline;text-underline-offset:3px;}
-.in-drone-mr-link:focus-visible{outline:2px solid currentColor;outline-offset:4px;border-radius:3px;}
+.in-drone-mr-id{display:block;font-weight:600;line-height:1.5;overflow-wrap:anywhere;}
 .in-drone-actions{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;width:100%;min-width:0;max-width:100%;}
 .in-drone-statuses{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:6px;width:100%;min-width:0;}
 .in-drone-statuses>span{max-width:100%;white-space:normal;text-align:center;overflow-wrap:anywhere;line-height:1.4;}
 .in-drone-sale-button{max-width:100%;min-height:32px;white-space:normal;}
-.in-drone-request-dialog{width:calc(100vw - 32px);max-width:880px;max-height:90vh;margin:auto;padding:0;overflow-y:auto;overscroll-behavior:contain;}
-.in-drone-request-dialog::backdrop{background:rgba(15,23,42,.45);}
-.in-drone-request-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 24px;}
+.in-drone-request-dialog{width:calc(100vw - 48px);max-width:1280px;max-height:90vh;max-height:90dvh;margin:auto;padding:0;overflow:hidden;}
+.in-drone-request-dialog::backdrop{background:rgba(15,23,42,.6);backdrop-filter:blur(3px);}
+.in-drone-request-layout{display:flex;flex-direction:column;max-height:90vh;max-height:90dvh;min-height:0;}
+.in-drone-request-header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding:24px 28px;border-bottom:1px solid #e2e8f0;flex-shrink:0;}
+.in-drone-request-body{padding:24px 28px;overflow:auto;overscroll-behavior:contain;min-height:0;}
+.in-drone-request-close{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border:1px solid #e2e8f0;border-radius:10px;flex-shrink:0;background:transparent;cursor:pointer;}
+.in-drone-request-close:hover{background:#f1f5f9;color:#0f172a;}
+.in-drone-request-close:focus-visible,.assembly-serials summary:focus-visible,.assembly-table-scroll:focus-visible{outline:2px solid #6366f1;outline-offset:3px;}
+.in-drone-request-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px 28px;}
 .in-drone-request-meta>div{min-width:0;}
-.in-drone-request-meta dt{font-size:12px;line-height:1.4;}
-.in-drone-request-meta dd{margin:5px 0 0;font-size:14px;font-weight:500;line-height:1.6;overflow-wrap:anywhere;}
-.in-drone-request-remarks{grid-column:1/-1;}
-@media(max-width:900px){.in-drone-table th,.in-drone-table td{padding:12px 8px!important;}}
-@media(max-width:600px){.in-drone-table th,.in-drone-table td{padding:10px 5px!important;font-size:11px;}.in-drone-request-meta{grid-template-columns:minmax(0,1fr);}}
+.in-drone-request-meta dt{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;line-height:1.4;}
+.in-drone-request-meta dd{margin:6px 0 0;font-size:14px;font-weight:500;line-height:1.5;overflow-wrap:anywhere;}
+.in-drone-request-remarks{grid-column:1/-1;padding-top:16px;border-top:1px solid #e2e8f0;}
+.assembly-table-scroll{width:100%;overflow:auto;border:1px solid #e2e8f0;border-radius:12px;}
+.assembly-detail-table{width:100%;min-width:980px;border-collapse:collapse;font-size:13px;text-align:left;}
+.assembly-detail-table th{padding:13px 16px;background:#f8fafc;color:#64748b;font-size:11px;letter-spacing:.04em;font-weight:600;white-space:nowrap;}
+.assembly-detail-table td{padding:16px;border-top:1px solid #e2e8f0;vertical-align:top;}
+.assembly-detail-table tbody tr:hover{background:rgba(148,163,184,.06);}
+.assembly-detail-table .assembly-number{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;}
+.assembly-detail-table .assembly-component{min-width:190px;max-width:300px;overflow-wrap:anywhere;}
+.assembly-serials{min-width:155px;max-width:250px;}
+.assembly-serials summary{cursor:pointer;font-size:12px;font-weight:600;color:#4f46e5;padding:2px 0;}
+.assembly-serial-list{display:flex;flex-direction:column;gap:6px;max-height:160px;overflow:auto;margin-top:10px;padding:2px;}
+.assembly-serial-list span{white-space:nowrap;font-family:ui-monospace,monospace;font-size:11px;line-height:1.6;}
+.dark .in-drone-request-header,.dark .in-drone-request-close,.dark .in-drone-request-remarks,.dark .assembly-table-scroll,.dark .assembly-detail-table td{border-color:#334155;}
+.dark .assembly-detail-table th{background:#0f172a;color:#94a3b8;}
+.dark .assembly-serials summary{color:#a5b4fc;}
+.dark .in-drone-request-close:hover{background:#1e293b;color:#f8fafc;}
+@media(max-width:900px){.in-drone-table th,.in-drone-table td{padding:12px 8px!important;}.in-drone-request-meta{grid-template-columns:repeat(2,minmax(0,1fr));}}
+@media(max-width:600px){.in-drone-table th,.in-drone-table td{padding:10px 5px!important;font-size:11px;}.in-drone-request-meta{grid-template-columns:minmax(0,1fr);gap:16px;}.in-drone-request-dialog{width:calc(100vw - 20px);}.in-drone-request-header,.in-drone-request-body{padding:18px;}}
+
 `;
 
 function InDroneRequestDialog({ children, onClose }) {
@@ -797,6 +817,9 @@ export default function InventoryPage() {
   const [scrapEntries, setScrapEntries] = useState(() => getStoredScrapEntries());
   const [approvedRequests, setApprovedRequests] = useState([]);
   const [completedAssemblyRequests, setCompletedAssemblyRequests] = useState([]);
+  // This is a separate backend dataset from completed MRs. A finished MR
+  // does not, by itself, prove that a physical drone is available for Sale.
+  const [assemblyDroneInstances, setAssemblyDroneInstances] = useState([]);
   const [assemblyComponentUnits, setAssemblyComponentUnits] = useState([]);
   const [assemblyComponentUnitsError, setAssemblyComponentUnitsError] =
     useState("");
@@ -847,6 +870,15 @@ export default function InventoryPage() {
   const [openInDroneActionId, setOpenInDroneActionId] = useState("");
   const [salesProcessingId, setSalesProcessingId] = useState("");
   const [salesActionError, setSalesActionError] = useState("");
+  // Fast visual confirmation while sales backend and Management pages synchronize.
+  const [assemblySalesOverrides, setAssemblySalesOverrides] = useState({});
+
+  // Read-only details for an approved In Drone Sale. Never edit stock here.
+  const [soldSalesDetailsModal, setSoldSalesDetailsModal] = useState({
+    open: false,
+    row: null,
+    records: [],
+  });
 
   const [inDroneSalesModal, setInDroneSalesModal] = useState({
     open: false,
@@ -3390,20 +3422,26 @@ export default function InventoryPage() {
     return labels;
   };
 
-  const inDroneTypeCounts = {
-    All: approvedRequests.length + completedAssemblyRequests.length,
-  };
-  inDroneTypes.forEach((type) => {
-    inDroneTypeCounts[type] = 0;
-  });
+  // All badges count distinct MRs, not one row per physical instance.
+  const getInDroneRecordKey = (request = {}) => String(
+    request?.material_request_id || request?.request_id || request?.mr_id ||
+    request?.materialRequestDbId || request?.id || "",
+  ).trim().toUpperCase();
 
+  const recordsByType = Object.fromEntries(
+    ["All", ...inDroneTypes].map((type) => [type, new Set()]),
+  );
   [...approvedRequests, ...completedAssemblyRequests].forEach((request) => {
+    const key = getInDroneRecordKey(request);
+    if (!key) return;
+    recordsByType.All.add(key);
     getInDroneTypeLabels(request).forEach((type) => {
-      if (Object.prototype.hasOwnProperty.call(inDroneTypeCounts, type)) {
-        inDroneTypeCounts[type] += 1;
-      }
+      if (recordsByType[type]) recordsByType[type].add(key);
     });
   });
+  const inDroneTypeCounts = Object.fromEntries(
+    Object.entries(recordsByType).map(([type, keys]) => [type, keys.size]),
+  );
 
   const filteredCompletedAssemblyRequests =
     inDroneTypeFilter === "All"
@@ -3411,17 +3449,6 @@ export default function InventoryPage() {
       : completedAssemblyRequests.filter((request) =>
           getInDroneTypeLabels(request).includes(inDroneTypeFilter),
         );
-
-  const filteredFinishedAssemblyComponentUnits =
-    inDroneTypeFilter === "All"
-      ? assemblyComponentUnits
-      : assemblyComponentUnits.filter((unit) => {
-          const mrNumber = String(unit?.material_request_id || "").trim().toUpperCase();
-          return filteredCompletedAssemblyRequests.some((request) =>
-            [request?.material_request_id, request?.request_id, request?.mr_id]
-              .some((value) => String(value || "").trim().toUpperCase() === mrNumber),
-          );
-        });
 
   const filteredInDroneRequests =
     inDroneTypeFilter === "All"
@@ -3522,6 +3549,204 @@ export default function InventoryPage() {
     }
 
     return Array.from(new Set(normalized));
+  };
+
+  // The Outward API stores Sale details on individual component rows.
+  // Group rows from the same invoice so the Sold popup shows ONE invoice
+  // with all its component lines, not 15 repeated customer/invoice blocks.
+  // This deliberately does NOT treat out_date as a confirmed delivery date.
+  const getApprovedSalesRecordsForRequest = (materialRequest = {}, outwardList = []) => {
+    const requestKeys = new Set(getRequestIds(materialRequest));
+    if (!requestKeys.size || !Array.isArray(outwardList)) return [];
+
+    const batches = new Map();
+    for (const outward of outwardList) {
+      if (String(outward?.outward_type || outward?.type || "").trim().toUpperCase() !== "SALES") {
+        continue;
+      }
+      const approval = String(outward?.approval_status || outward?.status || "")
+        .trim().toUpperCase();
+      if (!["APPROVED", "MANAGEMENT_APPROVED", "SOLD"].includes(approval)) {
+        continue;
+      }
+
+      const linkedMr = outward?.material_request;
+      const linkedReferences = [
+        outward?.material_request_number,
+        outward?.materialRequestNumber,
+        outward?.material_request_id,
+        outward?.materialRequestId,
+        typeof linkedMr === "object" ? linkedMr?.id : linkedMr,
+        typeof linkedMr === "object" ? linkedMr?.material_request_id : null,
+      ].filter((value) => value !== null && value !== undefined && String(value).trim());
+      if (!linkedReferences.some((ref) => requestKeys.has(normalizeRequestId(ref)))) {
+        continue;
+      }
+
+      const invoice = String(
+        outward?.invoice_number || outward?.invoiceNumber || outward?.invoice_no || "",
+      ).trim();
+      const client = String(
+        outward?.client || outward?.customer || outward?.customer_name || "",
+      ).trim();
+      // Multiple component rows share the same invoice; missing invoices are
+      // kept separate by database ID instead of wrongly merging all sales.
+      const batchKey = invoice
+        ? `${invoice.toUpperCase()}|${client.toUpperCase()}`
+        : `ROW-${outward?.id || outward?.code || batches.size}`;
+      const existing = batches.get(batchKey) || {
+        key: batchKey,
+        client: "",
+        invoiceNumber: "",
+        remarks: "",
+        deliveredDate: "",
+        outwardDate: "",
+        status: "APPROVED",
+        items: [],
+      };
+      const allocations = outward?.inventory_allocations &&
+        typeof outward.inventory_allocations === "object" &&
+        !Array.isArray(outward.inventory_allocations)
+        ? outward.inventory_allocations
+        : {};
+      existing.client = existing.client || client;
+      existing.invoiceNumber = existing.invoiceNumber || invoice;
+      existing.remarks = existing.remarks || String(outward?.remarks || outward?.reason || "").trim();
+      existing.deliveredDate = existing.deliveredDate || String(
+        outward?.delivered_date || outward?.delivery_date ||
+        outward?.delivered_at || outward?.deliveryDate ||
+        allocations?.delivered_date || allocations?.delivery_date || "",
+      ).trim();
+      existing.outwardDate = existing.outwardDate || String(outward?.out_date || "").trim();
+
+      const comp = outward?.component;
+      const componentCode = String(
+        outward?.component_code || outward?.componentCode ||
+        (typeof comp === "object" ? comp?.component_id || comp?.component_code : "") || "",
+      ).trim();
+      const componentName = String(
+        outward?.component_name || outward?.product_name ||
+        (typeof comp === "object" ? comp?.name || comp?.component_name : "") ||
+        (typeof comp === "string" ? comp : "") || "",
+      ).trim();
+      existing.items.push({
+        key: String(outward?.id || outward?.code || existing.items.length),
+        component: [componentCode, componentName].filter(Boolean).join(" - ") || "Component / Drone",
+        quantity: Math.max(0, Number(outward?.quantity ?? outward?.qty ?? 0) || 0),
+      });
+      batches.set(batchKey, existing);
+    }
+    return Array.from(batches.values()).sort((left, right) =>
+      String(right.deliveredDate || right.outwardDate).localeCompare(
+        String(left.deliveredDate || left.outwardDate),
+      ),
+    );
+  };
+
+  const openSoldSalesDetails = (request = {}) => {
+    setSoldSalesDetailsModal({
+      open: true,
+      row: request,
+      records: Array.isArray(request?.salesHistory) ? request.salesHistory : [],
+    });
+  };
+
+  const formatSalesRecordDate = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return "Not recorded";
+    const isoDate = raw.match(/^\d{4}-\d{2}-\d{2}/)?.[0];
+    return isoDate || raw;
+  };
+
+  // The MR Details / Material Requests page is the source of truth for
+  // original DRONE quantity. R&D required_quantity can instead be the sum of
+  // COMPONENT units (e.g. 15). Never show or sell those as 15 drones.
+  const getCompletedAssemblyDroneQuantity = (request = {}) => {
+    const type = getNormalAssemblyMrType(request);
+    // BOM's required_quantity is explicitly the drone count in the MR table.
+    // R&D must use only dedicated drone quantity fields, not required_quantity
+    // or component-item counts.
+    const candidates = type === "R&D"
+      ? [request?.drone_quantity, request?.droneQuantity]
+      : [
+          request?.required_quantity,
+          request?.requiredQuantity,
+          request?.drone_quantity,
+          request?.droneQuantity,
+          request?.assembly_quantity,
+          request?.assemblyQuantity,
+        ];
+    const raw = candidates.find((value) =>
+      value !== undefined && value !== null && String(value).trim() !== "",
+    );
+    const quantity = Number(raw);
+    return Number.isFinite(quantity) && quantity > 0
+      ? Math.floor(quantity)
+      : 0;
+  };
+
+  // Match the actual persisted DroneInstance records to a completed BOM/R&D
+  // MR. Do not infer available stock from `drone_quantity`: that number can
+  // describe the request, not a saleable physical drone.
+  const getAssemblyDroneInstances = (request = {}) => {
+    const ids = new Set(getRequestIds(request));
+    if (!ids.size) return [];
+
+    const unique = new Map();
+    assemblyDroneInstances.forEach((instance) => {
+      const linkedMr = instance?.material_request;
+      const candidates = [
+        typeof linkedMr === "object" ? linkedMr?.id : linkedMr,
+        typeof linkedMr === "object" ? linkedMr?.material_request_id : null,
+        instance?.material_request_id,
+        instance?.material_request_number,
+        instance?.materialRequestNumber,
+        instance?.request_id,
+      ];
+      if (!candidates.some((candidate) =>
+        candidate !== undefined && candidate !== null &&
+        ids.has(normalizeRequestId(candidate)))) return;
+      const key = String(instance?.id ?? "").trim();
+      if (key) unique.set(key, instance);
+    });
+
+    return Array.from(unique.values()).sort((a, b) =>
+      Number(a?.sequence || 0) - Number(b?.sequence || 0),
+    );
+  };
+
+  // Protect against legacy DroneInstance entries created from an R&D
+  // component count. A persisted AVAILABLE status alone does not make such
+  // an entry a saleable drone when its parent MR declares Drone Qty = 0.
+  // Cap matched physical records at the MR's actual requested drone count.
+  const getEligibleAssemblyDroneInstances = (request = {}) => {
+    const quantity = getCompletedAssemblyDroneQuantity(request);
+    return quantity > 0
+      ? getAssemblyDroneInstances(request).slice(0, quantity)
+      : [];
+  };
+
+  const toAssemblySaleRow = (request, instance) => {
+    const suffix = String(instance?.suffix ||
+      `_${String(instance?.sequence || 1).padStart(2, "0")}`);
+    const mrNumber = request?.material_request_id || request?.request_id ||
+      request?.mr_id || `MR-${request?.id || ""}`;
+    return {
+      ...request,
+      id: `drone-instance-${instance.id}`,
+      materialRequestDbId: request?.id,
+      droneInstanceId: instance.id,
+      drone_instance_id: instance.id,
+      droneInstanceSuffix: suffix,
+      droneInstanceCode: instance?.instance_code || `${mrNumber}${suffix}`,
+      droneInstanceDisplay: `${mrNumber} / ${suffix}`,
+      droneInstanceStatus: String(instance?.status || "").toUpperCase(),
+      droneInstanceParentQuantity: Math.max(Number(request?.drone_quantity || 1), 1),
+      inDroneAvailableQuantity: 1,
+      inDroneApprovedSalesQuantity: 0,
+      inDronePendingSalesQuantity: 0,
+      inDroneScrapSaleBlocked: false,
+    };
   };
 
   const getRequestProjectRows = (request) => {
@@ -8331,6 +8556,26 @@ serials_list: manualSerials.length ? manualSerials : buildManualInventorySerials
     ]);
   }, [tab]);
 
+  // Management may approve from another browser/session. Refresh only the In
+  // Drone datasets when this tab becomes active again, without heavy polling.
+  useEffect(() => {
+    if (tab !== "in-drone") return undefined;
+    let lastRefresh = 0;
+    const refreshOnFocus = () => {
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (now - lastRefresh < 1500) return;
+      lastRefresh = now;
+      void loadApprovedMaterialRequests();
+    };
+    window.addEventListener("focus", refreshOnFocus);
+    document.addEventListener("visibilitychange", refreshOnFocus);
+    return () => {
+      window.removeEventListener("focus", refreshOnFocus);
+      document.removeEventListener("visibilitychange", refreshOnFocus);
+    };
+  }, [tab]);
+
   /*
    * IMPORTANT:
    *
@@ -9368,12 +9613,12 @@ issued_to:
     setSalesActionError("");
     setOpenInDroneActionId("");
 
-    const availableQuantity =
-      getInDroneAvailableQuantity(row);
+    const componentAssemblySale = row?.saleMode === "COMPONENT_ASSEMBLY";
+    const availableQuantity = getInDroneAvailableQuantity(row);
 
-    if (availableQuantity <= 0) {
+    if (!componentAssemblySale && availableQuantity <= 0) {
       setSalesActionError(
-        "No In-Drone quantity is currently available for Sales.",
+        "No In-Drone drone quantity is currently available for Sales.",
       );
       return;
     }
@@ -9453,17 +9698,27 @@ issued_to:
       salesDetails?.remarks || "",
     ).trim();
 
-    const availableQuantity =
-      getInDroneAvailableQuantity(row);
-    const requestedQuantity = Math.max(
-      Number(salesDetails?.quantity || 0),
-      0,
-    );
+    const componentAssemblySale = row?.saleMode === "COMPONENT_ASSEMBLY";
+    const componentUnits = componentAssemblySale
+      ? getAvailableFinishedComponentUnits(row)
+      : [];
+    const availableQuantity = getInDroneAvailableQuantity(row);
+    const requestedQuantity = componentAssemblySale
+      ? 0
+      : Math.max(Number(salesDetails?.quantity || 0), 0);
 
-    if (
+    if (componentAssemblySale && !componentUnits.length) {
+      setInDroneSalesModal((previous) => ({
+        ...previous,
+        error: "No available completed-assembly component units were returned by the backend. Cannot sell or reserve unverified stock.",
+      }));
+      return;
+    }
+
+    if (!componentAssemblySale && (
       !Number.isInteger(requestedQuantity) ||
       requestedQuantity <= 0
-    ) {
+    )) {
       setInDroneSalesModal((previous) => ({
         ...previous,
         error: "Sales quantity must be at least 1.",
@@ -9471,7 +9726,7 @@ issued_to:
       return;
     }
 
-    if (requestedQuantity > availableQuantity) {
+    if (!componentAssemblySale && requestedQuantity > availableQuantity) {
       setInDroneSalesModal((previous) => ({
         ...previous,
         error: `Only ${availableQuantity} unit(s) are currently available in In Drone.`,
@@ -9509,24 +9764,54 @@ issued_to:
     setOpenInDroneActionId("");
 
     try {
-      const response = await fetchAuthenticatedJson(
-        `${config.baseURL}/outward/in-drone-sales/`,
-        {
-          method: "POST",
-          body: JSON.stringify({
+      // Component-only sales MUST use a separate backend handler. Never send
+      // a fake 1-drone request to the physical in-drone-sales endpoint.
+      // Backend route requirement:
+      // POST /outward/in-drone-component-sales/ -> create SALES Outward rows
+      // (PENDING_MANAGEMENT) linked to the MR and selected component units.
+      const endpoint = componentAssemblySale
+        ? "/outward/in-drone-component-sales/"
+        : "/outward/in-drone-sales/";
+      const payload = componentAssemblySale
+        ? {
+            material_request_id: reference,
+            sale_mode: "COMPONENT_ASSEMBLY",
+            quantity: 0, // zero DRONES, not zero component units
+            items: componentUnits.map((unit) => ({
+              project_inventory_id: unit?.project_inventory_id ?? null,
+              component_id: unit?.component_id ?? unit?.component ?? null,
+              quantity: Number(unit?.remaining_quantity || 0),
+              serial_numbers: Array.isArray(unit?.serial_numbers)
+                ? unit.serial_numbers : [],
+            })),
+            client,
+            invoice_number: invoiceNumber,
+            remarks,
+          }
+        : {
             material_request_id: reference,
             drone_instance_id: row?.droneInstanceId || undefined,
             quantity: row?.droneInstanceId ? 1 : requestedQuantity,
             client,
             invoice_number: invoiceNumber,
             remarks,
-          }),
-        },
+          };
+      const response = await fetchAuthenticatedJson(
+        `${config.baseURL}${endpoint}`,
+        { method: "POST", body: JSON.stringify(payload) },
       );
+      // Confirmed POST -> Pending Management right away, not after a full MR
+      // reload. The backend must still be responsible for final SOLD state.
+      if (componentAssemblySale) {
+        setAssemblySalesOverrides((previous) => ({
+          ...previous,
+          [normalizeRequestId(reference)]: "PENDING_MANAGEMENT",
+        }));
+      }
 
-      window.dispatchEvent(new Event("notificationsUpdated"));
-      window.dispatchEvent(new Event("salesUpdated"));
-
+      // Backend POST has succeeded: the Sales Outward records and the
+      // MANAGEMENT notification have been committed. Close immediately;
+      // refreshing six Inventory datasets is not part of submission.
       setInDroneSalesModal({
         open: false,
         row: null,
@@ -9536,26 +9821,20 @@ issued_to:
         remarks: "",
         error: "",
       });
-
-      await loadApprovedMaterialRequests();
-
-      /*
-       * Stay on In Drone after Inventory/Finance/Admin submits the Sale.
-       * The Action cell immediately changes to:
-       *   Pending Management Approval
-       *
-       * Only after Management approves will it show:
-       *   Sold
-       */
       setTab("in-drone");
-      setSuccessMessage(
-        "Sale sent for Management approval.",
-      );
+      setSuccessMessage("Sale sent for Management approval.");
 
-      window.setTimeout(
-        () => setSuccessMessage(""),
-        3000,
-      );
+      // No network request below this point is allowed to hold the popup
+      // open or keep the Send button in its Sending state.
+      window.dispatchEvent(new Event("notificationsUpdated"));
+      window.dispatchEvent(new Event("salesUpdated"));
+      void loadApprovedMaterialRequests().catch((refreshError) => {
+        console.warn(
+          "Sale was submitted; Inventory background refresh failed:",
+          refreshError,
+        );
+      });
+      window.setTimeout(() => setSuccessMessage(""), 3000);
     } catch (error) {
       const errorStatus = Number(
         error?.status ||
@@ -9580,10 +9859,9 @@ issued_to:
         ...previous,
         error: isUnauthorized
           ? "Your login session is not authenticated for this request. Sign in again, keep Finance/Admin as the active role, then retry Sale."
-          : (
-              rawMessage ||
-              "Unable to send this In-Drone request to Sales."
-            ),
+          : (componentAssemblySale && errorStatus === 404
+              ? "Component-only Sale needs the Django POST /outward/in-drone-component-sales/ endpoint. The frontend will not create a fake drone sale for an R&D MR with Drone Qty 0."
+              : rawMessage || "Unable to send this In-Drone request to Sales."),
       }));
     } finally {
       setSalesProcessingId("");
@@ -9893,10 +10171,46 @@ issued_to:
         }),
       ]);
       setAssemblyComponentUnits(finishedAssemblyComponents);
+      setAssemblyDroneInstances(droneInstances);
       // Source of truth for the completed MR list is the MR endpoint,
       // not the optional finished component-unit endpoint.
+      // The completed-assembly table must react to real outward SALES records,
+      // not only the physical drone-instances API. An R&D MR with Drone Qty 0
+      // can be a component-assembly sale (never counted as a drone).
+      const assemblySalesByReference = new Map();
+      outwardRows.forEach((outward) => {
+        if (String(outward?.outward_type || outward?.type || "")
+          .trim().toUpperCase() !== "SALES") return;
+        const status = String(outward?.approval_status || outward?.status || "")
+          .trim().toUpperCase();
+        if (!status) return;
+        const reference = String(
+          outward?.material_request_number || outward?.materialRequestNumber ||
+          outward?.material_request || outward?.materialRequest || "",
+        ).trim().toUpperCase();
+        if (!reference) return;
+        const previous = assemblySalesByReference.get(reference) || "";
+        const weight = (value) =>
+          ["APPROVED", "MANAGEMENT_APPROVED", "SOLD"].includes(value) ? 3 :
+            ["PENDING_MANAGEMENT", "PENDING"].includes(value) ? 2 :
+              ["MANAGEMENT_REJECTED", "REJECTED"].includes(value) ? 1 : 0;
+        if (weight(status) >= weight(previous)) {
+          assemblySalesByReference.set(reference, status);
+        }
+      });
       setCompletedAssemblyRequests(
-        list.filter(isCompletedNormalAssemblyMr),
+        list.filter(isCompletedNormalAssemblyMr).map((request) => {
+          const refs = [request?.id, request?.material_request_id, request?.request_id]
+            .filter((value) => value !== null && value !== undefined)
+            .map((value) => String(value).trim().toUpperCase());
+          const salesStatus = refs.map((ref) => assemblySalesByReference.get(ref))
+            .find(Boolean) || "";
+          return {
+            ...request,
+            salesApprovalStatus: salesStatus,
+            salesHistory: getApprovedSalesRecordsForRequest(request, outwardRows),
+          };
+        }),
       );
 
       /*
@@ -11059,6 +11373,8 @@ issued_to:
         item.salesRemarks =
           salesDetails.remarks || "";
 
+        item.salesHistory = getApprovedSalesRecordsForRequest(item, outwardRows);
+
         /*
          * In-Drone allocation summary.
          *
@@ -11841,6 +12157,7 @@ issued_to:
       );
       setApprovedRequests([]);
       setCompletedAssemblyRequests([]);
+      setAssemblyDroneInstances([]);
       setAssemblyComponentUnits([]);
       setReturnedRequests([]);
     } finally {
@@ -14411,59 +14728,105 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
       };
     }, [purchaseOrders]);
 
-  const inDroneQuantity = useMemo(
-    () =>
-      (
-        Array.isArray(approvedRequests)
-          ? approvedRequests
-          : []
-      )
-        .filter(
-          (row) =>
-            row?.inDroneScrapSaleBlocked !==
-            true,
-        )
-        .reduce(
-          (sum, row) =>
-            sum +
-            getInDroneOwnedQuantity(
-              row,
-            ),
-          0,
-        ),
-    [
-      approvedRequests,
-      projectInventory,
-    ],
-  );
+  const getFinishedAssemblyUnits = (request = {}) => {
+    const ids = getRequestIds(request);
+    return assemblyComponentUnits.filter((unit) =>
+      ids.includes(normalizeRequestId(unit?.material_request_id)),
+    );
+  };
 
-  const inDroneCost = useMemo(
-    () =>
-      (
-        Array.isArray(approvedRequests)
-          ? approvedRequests
-          : []
-      )
-        .filter(
-          (row) =>
-            row?.inDroneScrapSaleBlocked !==
-            true,
+  // Component-only R&D assemblies have zero drones. Keep their component stock
+  // and sale workflow separate from real physical drone instances.
+  const getAvailableFinishedComponentUnits = (request = {}) =>
+    getFinishedAssemblyUnits(request).filter((unit) =>
+      Number(unit?.remaining_quantity ?? 0) > 0,
+    );
+
+  const getCompletedAssemblySalesStatus = (request = {}) => {
+    const savedStatus = String(request?.salesApprovalStatus || "")
+      .trim().toUpperCase();
+    // An authoritative APPROVED status always wins over a previous local
+    // optimistic pending marker (e.g. after Management approves on another tab).
+    if (["APPROVED", "MANAGEMENT_APPROVED", "SOLD"].includes(savedStatus)) {
+      return "APPROVED";
+    }
+    if (["MANAGEMENT_REJECTED", "REJECTED"].includes(savedStatus)) {
+      return "MANAGEMENT_REJECTED";
+    }
+    const ref = normalizeRequestId(
+      request?.material_request_id || request?.request_id || request?.mr_id || request?.id,
+    );
+    return String(assemblySalesOverrides[ref] || savedStatus).toUpperCase();
+  };
+
+  const getFinishedAssemblyLineCost = (unit = {}, request = {}) => {
+    const remaining = positiveNumber(unit.remaining_quantity);
+    if (!remaining) return 0;
+    const projectRows = getRequestProjectRows(request);
+    // The finished-components endpoint uses MR-PROJECTROW as its row id.
+    const projectId = unit.project_inventory_id ?? String(unit.id || "").split("-").pop();
+    const projectRow = projectRows.find((row) => String(row.id) === String(projectId)) ||
+      projectRows.find((row) => projectComponentsMatch(row, unit));
+    if (!projectRow) return getGenericRowUnitCost(unit, unit.issued_quantity) * remaining;
+
+    const rawDetails = projectRow.cost_details || projectRow.serial_cost_details || [];
+    const details = Array.isArray(rawDetails) ? rawDetails : [rawDetails];
+    const serialCosts = details.flatMap((detail) => detail?.serials || detail?.items || detail?.rows || []);
+    const remainingSerials = new Set((unit.serial_numbers || []).map(String));
+    const costsBySerial = new Map();
+    for (const serial of serialCosts) {
+      const key = String(serial.serial_number ?? serial.serial ?? serial.serialNumber ?? "");
+      const amount = Number(serial.allocated_cost ?? serial.total_cost ?? serial.amount);
+      if (remainingSerials.has(key) && Number.isFinite(amount)) costsBySerial.set(key, amount);
+    }
+    if (remainingSerials.size === remaining && costsBySerial.size === remaining) {
+      return Array.from(costsBySerial.values()).reduce((sum, amount) => sum + amount, 0);
+    }
+    // Where serial-level costs are unavailable, use the existing project valuation.
+    const allocatedTotal = getCostDetailsTotal(projectRow);
+    const allocationQuantity = serialCosts.length || getProjectPurchasedBaseQuantity(projectRow);
+    const unitCost = allocatedTotal > 0 && allocationQuantity > 0
+      ? allocatedTotal / allocationQuantity
+      : getProjectRowUnitCost(projectRow);
+    return remaining * unitCost;
+  };
+
+  const getCompletedAssemblyCost = (request = {}) => {
+    const units = getFinishedAssemblyUnits(request);
+    return units.length
+      ? units.reduce((sum, unit) => sum + getFinishedAssemblyLineCost(unit, request), 0)
+      : getInDroneRowCurrentCost(request);
+  };
+
+  // Physical instances already represent their parent MR; do not count it twice.
+  const additionalCompletedAssemblies = completedAssemblyRequests.filter((request) => {
+    const ids = getRequestIds(request);
+    return !approvedRequests.some((row) => getRequestIds(row).some((id) => ids.includes(id)));
+  });
+  const inDroneQuantity = approvedRequests
+    .filter((row) => row?.inDroneScrapSaleBlocked !== true)
+    .reduce((sum, row) => sum + getInDroneOwnedQuantity(row), 0) +
+    additionalCompletedAssemblies.reduce((sum, row) => sum + getInDroneOwnedQuantity(row), 0);
+
+  // The In Drone summary card measures distinct MR records, not requested
+  // drone quantities or component units. An MR represented by multiple
+  // DroneInstance rows must still count as one MR here.
+  const inDroneRecordCount = inDroneTypeCounts.All;
+
+  const verifiedAvailableAssemblyDrones = new Set(
+    completedAssemblyRequests.flatMap((request) =>
+      getEligibleAssemblyDroneInstances(request)
+        .filter((instance) =>
+          String(instance?.status || "").trim().toUpperCase() === "AVAILABLE",
         )
-        .reduce(
-          (sum, row) =>
-            sum +
-            getInDroneRowCurrentCost(
-              row,
-            ),
-          0,
-        ),
-    [
-      approvedRequests,
-      projectInventory,
-      qcInventory,
-      components,
-    ],
-  );
+        .map((instance) => String(instance.id)),
+    ),
+  ).size;
+
+  const inDroneCost = approvedRequests
+    .filter((row) => row?.inDroneScrapSaleBlocked !== true)
+    .reduce((sum, row) => sum + getInDroneRowCurrentCost(row), 0) +
+    additionalCompletedAssemblies.reduce((sum, row) => sum + getCompletedAssemblyCost(row), 0);
 
   const flightTestQuantity = useMemo(
     () =>
@@ -14720,7 +15083,8 @@ const activeOutwardType = tab === "sales" || tab === "event" ? tab : selectedOut
     },
     {
       label: "In Drone",
-      value: inDroneQuantity,
+      quantityLabel: "MR records",
+      value: inDroneRecordCount,
       cost: inDroneCost,
       tone:
         "bg-primary/10 text-primary",
@@ -18135,7 +18499,7 @@ const getRowsForCurrentTab = () => {
               <div className="mt-3 flex flex-wrap items-end justify-between gap-3">
                 <div>
                   <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    Qty
+                    {card.quantityLabel || "Qty"}
                   </div>
                   <div className="text-3xl font-semibold tracking-tight text-foreground">
                     {card.value}
@@ -18166,7 +18530,7 @@ const getRowsForCurrentTab = () => {
           {tab === "project-inventory" &&
             `${visibleProjectInventory.length} project inventory item(s)`}
           {tab === "in-drone" &&
-            `${approvedRequests.length} approved drone request(s)`}
+            `${inDroneRecordCount} distinct In-Drone / completed assembly MR record(s)`}
           {tab === "scrap" &&
             `${visibleScrap.length} ${
               selectedOutwardTab === "failedQc"
@@ -19384,7 +19748,10 @@ const getRowsForCurrentTab = () => {
                 <div className="text-sm font-semibold text-foreground">In Drone</div>
                 <div className="mt-3 flex flex-wrap gap-4 text-xs text-muted-foreground">
                   <span>
-                    Qty: <strong className="text-foreground">{inDroneQuantity}</strong>
+                    MR Records: <strong className="text-foreground">{inDroneRecordCount}</strong>
+                  </span>
+                  <span>
+                    Verified Available Drones: <strong className="text-foreground">{verifiedAvailableAssemblyDrones}</strong>
                   </span>
                   <span>
                     Cost: <strong className="text-foreground">{formatCurrency(inDroneCost)}</strong>
@@ -19402,7 +19769,7 @@ const getRowsForCurrentTab = () => {
               </div>
             </div>
             <p className="mt-2 text-sm text-muted-foreground">
-              Drone Qty shows the original drone quantity raised on each MR. Sales and Returnable actions still use the internally calculated remaining available quantity, while movement/QC/reorder history is retained in the Action column.
+              MR Records counts each completed assembly request once. Drone Qty is taken from the MR (not component quantity). AVAILABLE physical drones are counted and made saleable only up to the parent MR's recorded drone quantity.
             </p>
           </div>
 
@@ -19442,7 +19809,7 @@ const getRowsForCurrentTab = () => {
                 </h3>
                 <p className="mt-1 text-xs text-muted-foreground">
                   BOM, Customised BOM and R&amp;D requests appear here after Finish / Completed.
-                  They are assembly records, not automatically available physical drones for Sale.
+                  Each completed MR appears on its own line. R&amp;D component quantities never become Drone Qty. For Drone Qty 0 R&D requests, Sale opens a component-assembly sale; drone sales still require AVAILABLE physical instances. Management approval determines Sold status.
                 </p>
               </div>
               <div className="in-drone-table">
@@ -19452,14 +19819,9 @@ const getRowsForCurrentTab = () => {
                       key: "material_request_id",
                       header: "MR ID",
                       render: (row) => (
-                        <button
-                          type="button"
-                          className="in-drone-mr-link text-primary"
-                          onClick={() => openInDroneRequestDetails(row)}
-                          title="View completed material request"
-                        >
+                        <span className="in-drone-mr-id text-foreground">
                           {row.material_request_id || row.request_id || row.mr_id || `MR-${row.id}`}
-                        </button>
+                        </span>
                       ),
                     },
                     {
@@ -19478,12 +19840,9 @@ const getRowsForCurrentTab = () => {
                     {
                       key: "drone_quantity",
                       header: "Drone Qty",
-                      render: (row) => {
-                        const quantity = Number(
-                          row.drone_quantity ?? row.droneQuantity ?? row.required_quantity ?? 0,
-                        );
-                        return Number.isFinite(quantity) && quantity > 0 ? quantity : "—";
-                      },
+                      render: (row) => getCompletedAssemblyDroneQuantity(row),
+                      sortValue: (row) => getCompletedAssemblyDroneQuantity(row),
+                      filterValue: (row) => getCompletedAssemblyDroneQuantity(row),
                     },
                     {
                       key: "status",
@@ -19493,6 +19852,111 @@ const getRowsForCurrentTab = () => {
                           MR Completed
                         </span>
                       ),
+                    },
+                    {
+                      key: "assemblyCost",
+                      header: "In Drone Cost",
+                      render: (row) => formatCurrency(getCompletedAssemblyCost(row)),
+                    },
+                    {
+                      key: "assemblyCostDetails",
+                      header: "Cost Details",
+                      render: (row) => (
+                        <button type="button" className="serial-cost-component" onClick={() => openInDroneCostDetails(row)}>
+                          View Details
+                        </button>
+                      ),
+                    },
+                    {
+                      key: "saleAction",
+                      header: "Action / Sale",
+                      render: (row) => {
+                        const declaredDroneQuantity = getCompletedAssemblyDroneQuantity(row);
+                        const linked = getEligibleAssemblyDroneInstances(row);
+                        const available = linked.filter((instance) =>
+                          String(instance?.status || "").trim().toUpperCase() === "AVAILABLE",
+                        );
+                        const mrNumber = String(row?.material_request_id ||
+                          row?.request_id || row?.mr_id || row?.id || "");
+                        const status = getCompletedAssemblySalesStatus(row);
+                        const sold = ["APPROVED", "MANAGEMENT_APPROVED", "SOLD"].includes(status);
+                        const pending = ["PENDING_MANAGEMENT", "PENDING"].includes(status);
+                        const isComponentOnly = declaredDroneQuantity === 0 &&
+                          getNormalAssemblyMrType(row) === "R&D";
+
+                        // Physical multi-drone assemblies are sold per instance.
+                        // One approved _01 must not block Sale _02.
+                        const allLinkedSold = linked.length > 0 && linked.every((instance) =>
+                          String(instance?.status || "").trim().toUpperCase() === "SOLD");
+                        if ((isComponentOnly && sold) || allLinkedSold || (sold && !linked.length && !isComponentOnly)) {
+                          return <button type="button"
+                            onClick={() => openSoldSalesDetails(row)}
+                            className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-600"
+                            title="View saved customer, invoice, remarks and delivery details"
+                          >Sold</button>;
+                        }
+                        if (pending && (isComponentOnly || !linked.length)) {
+                          return <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-700">Pending Management Approval</span>;
+                        }
+                        if (!canStartInDroneSale) {
+                          return <span className="text-xs text-muted-foreground">View only</span>;
+                        }
+                        if (isComponentOnly) {
+                          return (
+                            <div className="flex flex-col items-center gap-1">
+                              <button type="button"
+                                disabled={Boolean(salesProcessingId)}
+                                onClick={() => openInDroneSalesModal({ ...row, saleMode: "COMPONENT_ASSEMBLY" })}
+                                className="in-drone-sale-button rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                                title="Request sale of available R&D assembly components (0 physical drones)">
+                                Sale
+                              </button>
+                              <span className="text-[10px] text-muted-foreground">Component assembly</span>
+                            </div>
+                          );
+                        }
+                        if (!available.length) {
+                          const allSold = linked.length > 0 && linked.every((instance) =>
+                            String(instance?.status || "").trim().toUpperCase() === "SOLD");
+                          const anyPending = linked.some((instance) =>
+                            String(instance?.status || "").trim().toUpperCase() === "SALE_PENDING");
+                          if (allSold) return <button type="button" onClick={() => openSoldSalesDetails(row)} className="font-semibold text-emerald-700 underline-offset-2 hover:underline" title="View Sold details">Sold</button>;
+                          if (anyPending) return <span className="font-semibold text-amber-700">Pending Management Approval</span>;
+                          return <span className="text-xs text-muted-foreground">No available physical drone</span>;
+                        }
+                        return (
+                          <div className="flex max-h-32 flex-wrap items-center justify-center gap-1.5 overflow-y-auto">
+                            {linked.filter((instance) =>
+                              ["SOLD", "SALE_PENDING"].includes(String(instance?.status || "").toUpperCase()),
+                            ).map((instance) => (
+                              <span key={`assembly-state-${instance.id}`} className="text-xs font-semibold">
+                                {String(instance.status).toUpperCase() === "SOLD" ? (
+                                  <button type="button" className="font-semibold text-emerald-700 underline-offset-2 hover:underline"
+                                    onClick={() => openSoldSalesDetails(row)}
+                                    title="View Sold details">
+                                    {instance.suffix || `_0${instance.sequence || 1}`}: Sold
+                                  </button>
+                                ) : (
+                                  <>{instance.suffix || `_0${instance.sequence || 1}`}: Sale Pending</>
+                                )}
+                              </span>
+                            ))}
+                            {available.map((instance) => {
+                              const suffix = instance?.suffix ||
+                                `_${String(instance?.sequence || 1).padStart(2, "0")}`;
+                              return (
+                                <button key={`assembly-sale-${instance.id}`} type="button"
+                                  disabled={Boolean(salesProcessingId)}
+                                  onClick={() => openInDroneSalesModal(toAssemblySaleRow(row, instance))}
+                                  className="in-drone-sale-button rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                                  title={`Sale ${mrNumber} / ${suffix} (AVAILABLE physical drone)`}>
+                                  Sale {suffix}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        );
+                      },
                     },
                     {
                       key: "details",
@@ -19560,19 +20024,9 @@ const getRowsForCurrentTab = () => {
 
                     return (
                       <div className="flex flex-col items-center justify-center gap-1.5">
-                        <button
-                          type="button"
-                          className="in-drone-mr-link text-primary"
-                          onClick={() =>
-                            openInDroneRequestDetails(
-                              row,
-                            )
-                          }
-                          aria-haspopup="dialog"
-                          title="View material request details"
-                        >
+                        <span className="in-drone-mr-id text-foreground">
                           {displayMrNumber}
-                        </button>
+                        </span>
 
                         {row.inDroneReplacementCompleted &&
                           row.inDroneReplacementMrNumber &&
@@ -19853,12 +20307,24 @@ const getRowsForCurrentTab = () => {
                         {statusBadges.length > 0 && (
                           <div className="in-drone-statuses">
                             {statusBadges.map((badge) => (
-                              <span
-                                key={badge.label}
-                                className={`inline-flex items-center justify-center rounded-full border px-2.5 py-1 text-[11px] font-semibold ${badge.className}`}
-                              >
-                                {badge.label}
-                              </span>
+                              String(badge.label).startsWith("Sold:") ? (
+                                <button
+                                  key={badge.label}
+                                  type="button"
+                                  onClick={() => openSoldSalesDetails(row)}
+                                  className={`inline-flex items-center justify-center rounded-full border px-2.5 py-1 text-[11px] font-semibold hover:underline ${badge.className}`}
+                                  title="View Sold details"
+                                >
+                                  {badge.label}
+                                </button>
+                              ) : (
+                                <span
+                                  key={badge.label}
+                                  className={`inline-flex items-center justify-center rounded-full border px-2.5 py-1 text-[11px] font-semibold ${badge.className}`}
+                                >
+                                  {badge.label}
+                                </span>
+                              )
                             ))}
                           </div>
                         )}
@@ -19927,94 +20393,88 @@ const getRowsForCurrentTab = () => {
               {assemblyComponentUnitsError}
             </div>
           )}
-          {filteredFinishedAssemblyComponentUnits.length > 0 && (
-            <section className="mt-6 space-y-3">
-              <div>
-                <h3 className="text-sm font-semibold text-foreground">
-                  Finished Assembly Component Units
-                </h3>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Completed component lines remain visible for traceability. In Drone Qty shows the units not yet returned.
-                </p>
-              </div>
-              <div className="in-drone-table">
-                <DataTable
-                  columns={[
-                    {
-                      key: "material_request_id",
-                      header: "MR ID",
-                      className: "text-center",
-                      render: (row) => row.material_request_id || "—",
-                    },
-                    {
-                      key: "project",
-                      header: "Project",
-                      render: (row) => row.project || "—",
-                    },
-                    {
-                      key: "component_id",
-                      header: "Component",
-                      render: (row) => (
-                        <div className="flex flex-col">
-                          <span className="font-semibold text-foreground">
-                            {row.component_id || "—"}
-                          </span>
-                          {row.component_name &&
-                            row.component_name !== row.component_id && (
-                              <span className="text-xs text-muted-foreground">
-                                {row.component_name}
-                              </span>
-                            )}
+          {soldSalesDetailsModal.open && soldSalesDetailsModal.row && (
+            <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/50 p-4"
+              onMouseDown={(event) => {
+                if (event.currentTarget === event.target) {
+                  setSoldSalesDetailsModal({ open: false, row: null, records: [] });
+                }
+              }}>
+              <div role="dialog" aria-modal="true" aria-labelledby="sold-details-title"
+                className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border bg-white p-6 shadow-2xl dark:bg-slate-950">
+                <div className="mb-5 flex items-start justify-between gap-4">
+                  <div>
+                    <h3 id="sold-details-title" className="text-lg font-bold text-foreground">Sold — Sales Details</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      MR: {soldSalesDetailsModal.row.material_request_id ||
+                        soldSalesDetailsModal.row.request_id ||
+                        soldSalesDetailsModal.row.mr_id ||
+                        soldSalesDetailsModal.row.id}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">Read-only sales history recorded in Outward.</p>
+                  </div>
+                  <button type="button" aria-label="Close Sold details"
+                    onClick={() => setSoldSalesDetailsModal({ open: false, row: null, records: [] })}
+                    className="rounded-lg border border-border p-2 text-muted-foreground hover:bg-muted">
+                    <X className="size-4" />
+                  </button>
+                </div>
+
+                {!soldSalesDetailsModal.records.length ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                    This MR is marked Sold, but no approved Outward Sales detail rows were returned by the API.
+                    Customer, invoice, remarks and delivery details cannot be verified for this record.
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {soldSalesDetailsModal.records.map((sale, index) => (
+                      <div key={sale.key || index} className="rounded-xl border border-border p-4">
+                        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-sm font-bold text-foreground">Sale {index + 1}</p>
+                          <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">Sold / Approved</span>
                         </div>
-                      ),
-                    },
-                    {
-                      key: "component_type",
-                      header: "Component Type",
-                      render: (row) => row.component_type || "—",
-                    },
-                    {
-                      key: "issued_quantity",
-                      header: "Issued Qty",
-                      className: "text-center",
-                      render: (row) => row.issued_quantity,
-                    },
-                    {
-                      key: "returned_quantity",
-                      header: "Returned Qty",
-                      className: "text-center",
-                      render: (row) => row.returned_quantity,
-                    },
-                    {
-                      key: "remaining_quantity",
-                      header: "In Drone Qty",
-                      className: "text-center",
-                      render: (row) => (
-                        <span className="font-bold text-emerald-700">
-                          {row.remaining_quantity}
-                        </span>
-                      ),
-                    },
-                    {
-                      key: "serial_numbers",
-                      header: "Serial Numbers",
-                      render: (row) =>
-                        Array.isArray(row.serial_numbers) &&
-                        row.serial_numbers.length
-                          ? row.serial_numbers.join(", ")
-                          : "—",
-                    },
-                  ]}
-                  rows={filteredFinishedAssemblyComponentUnits}
-                  loading={loadingRequests}
-                  loadingTitle="Loading finished Assembly components..."
-                  loadingDescription="Calculating issued units remaining after Assembly returns."
-                  enableColumnTools
-                  keyField="id"
-                />
+                        <dl className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
+                          <div><dt className="text-xs font-medium text-muted-foreground">Customer / Client Name</dt>
+                            <dd className="mt-1 break-words text-sm font-semibold text-foreground">{sale.client || "Not recorded"}</dd></div>
+                          <div><dt className="text-xs font-medium text-muted-foreground">Invoice Number</dt>
+                            <dd className="mt-1 break-words text-sm font-semibold text-foreground">{sale.invoiceNumber || "Not recorded"}</dd></div>
+                          <div><dt className="text-xs font-medium text-muted-foreground">Delivered Date</dt>
+                            <dd className="mt-1 text-sm font-semibold text-foreground">{formatSalesRecordDate(sale.deliveredDate)}</dd></div>
+                          <div><dt className="text-xs font-medium text-muted-foreground">Outward Date</dt>
+                            <dd className="mt-1 text-sm font-semibold text-foreground">{formatSalesRecordDate(sale.outwardDate)}</dd></div>
+                          <div className="sm:col-span-2"><dt className="text-xs font-medium text-muted-foreground">Remarks</dt>
+                            <dd className="mt-1 whitespace-pre-wrap break-words text-sm text-foreground">{sale.remarks || "Not recorded"}</dd></div>
+                        </dl>
+                        {sale.items?.length > 0 && (
+                          <div className="mt-4 border-t border-border pt-3">
+                            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Sold Line Items</p>
+                            <div className="max-h-40 space-y-1 overflow-auto">
+                              {sale.items.map((item, itemIndex) => (
+                                <div key={`${item.key}-${itemIndex}`} className="flex items-start justify-between gap-4 text-sm">
+                                  <span className="min-w-0 break-words">{item.component}</span>
+                                  <span className="shrink-0 font-semibold">{item.quantity} unit(s)</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {!sale.deliveredDate && (
+                          <p className="mt-3 text-xs text-muted-foreground">
+                            A confirmed Delivered Date was not saved in the current backend. The Outward Date is the Sale record date, not proof of delivery.
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="mt-5 flex justify-end">
+                  <button type="button" onClick={() => setSoldSalesDetailsModal({ open: false, row: null, records: [] })}
+                    className="rounded-lg border border-border px-5 py-2 text-sm font-semibold hover:bg-muted">Close</button>
+                </div>
               </div>
-            </section>
+            </div>
           )}
+
           {inDroneSalesModal.open && inDroneSalesModal.row && (
             <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 p-4">
               <div className="w-full max-w-lg rounded-2xl border border-border bg-white p-6 shadow-2xl dark:bg-slate-950">
@@ -20024,7 +20484,7 @@ const getRowsForCurrentTab = () => {
                       Sales Details
                     </h3>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      Enter the customer and invoice details. Finance/Admin will submit this MR to Management for Sales approval.
+                      Enter the customer and invoice details. The request goes to Management for Sales approval. Component-only R&amp;D sales require the dedicated Django endpoint.
                     </p>
                     <p className="mt-2 text-xs font-semibold text-muted-foreground">
                       MR:{" "}
@@ -20048,6 +20508,23 @@ const getRowsForCurrentTab = () => {
                 </div>
 
                 <div className="space-y-4">
+                  {inDroneSalesModal.row?.saleMode === "COMPONENT_ASSEMBLY" ? (
+                    <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
+                      <strong>R&amp;D Component Assembly Sale</strong>
+                      <p className="mt-1">Drone Qty is 0. This request will sell the available completed-assembly component units, not a physical drone.</p>
+                      <div className="mt-2 max-h-36 space-y-1 overflow-auto">
+                        {getAvailableFinishedComponentUnits(inDroneSalesModal.row).map((unit, index) => (
+                          <div key={`${unit?.id || index}`} className="flex justify-between gap-4">
+                            <span>{unit?.component_name || unit?.component_code || `Component ${index + 1}`}</span>
+                            <strong>{Number(unit?.remaining_quantity || 0)} unit(s)</strong>
+                          </div>
+                        ))}
+                      </div>
+                      {!getAvailableFinishedComponentUnits(inDroneSalesModal.row).length && (
+                        <p className="mt-2 font-semibold text-rose-700">No available component stock is recorded for this MR.</p>
+                      )}
+                    </div>
+                  ) : (
                   <div>
                     <label className="mb-1.5 block text-sm font-semibold text-foreground">
                       Drone Quantity <span className="text-red-500">*</span>
@@ -20074,6 +20551,7 @@ const getRowsForCurrentTab = () => {
                       )}
                     </p>
                   </div>
+                  )}
 
                   <div>
                     <label className="mb-1.5 block text-sm font-semibold text-foreground">
@@ -20299,11 +20777,11 @@ const getRowsForCurrentTab = () => {
 
           {selectedRequest && (
             <InDroneRequestDialog onClose={closeInDroneRequestDetails}>
-              <div className="p-5 sm:p-6">
-                <div className="mb-5 flex items-start justify-between gap-4">
+              <div className="in-drone-request-layout">
+                <div className="in-drone-request-header">
                   <div className="min-w-0">
                     <h3 id="in-drone-request-title" className="text-lg font-semibold text-foreground">
-                      Material Request Details
+                      In Drone Details
                     </h3>
                     <p className="mt-1 break-words text-sm font-semibold text-primary">
                       {selectedRequest.material_request_id || selectedRequest.request_id || selectedRequest.mr_id || selectedRequest.id || "-"}
@@ -20312,15 +20790,15 @@ const getRowsForCurrentTab = () => {
                   <button
                     type="button"
                     onClick={closeInDroneRequestDetails}
-                    className="shrink-0 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground"
-                    aria-label="Close material request details"
+                    className="in-drone-request-close text-muted-foreground"
+                    aria-label="Close In Drone details"
                     autoFocus
                   >
-                    Close
+                    <X size={18} aria-hidden="true" />
                   </button>
                 </div>
 
-                <div className="space-y-6 text-sm">
+                <div className="in-drone-request-body space-y-6 text-sm">
                   <dl className="in-drone-request-meta rounded-2xl border border-border bg-muted/10 p-4">
                     <div>
                       <dt className="text-muted-foreground">Requester Name</dt>
@@ -20656,7 +21134,66 @@ const getRowsForCurrentTab = () => {
                     </div>
                   )}
 
-                  {!isFromScrapRequest(
+          {getFinishedAssemblyUnits(selectedRequest).length > 0 && (
+            <section className="mt-6 space-y-3">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">
+                  Finished Assembly Component Units
+                </h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Completed component lines remain visible for traceability. In Drone Qty shows the units not yet returned.
+                </p>
+              </div>
+              <div className="assembly-table-scroll" role="region" aria-label="Finished assembly component units" tabIndex={0}>
+                <table className="assembly-detail-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Component</th>
+                      <th scope="col">Component Type</th>
+                      <th scope="col" className="assembly-number">Issued Qty</th>
+                      <th scope="col" className="assembly-number">Returned Qty</th>
+                      <th scope="col" className="assembly-number">In Drone Qty</th>
+                      <th scope="col" className="assembly-number">In Drone Line Cost</th>
+                      <th scope="col">Serial Numbers</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {getFinishedAssemblyUnits(selectedRequest).map((row) => (
+                      <tr key={row.id}>
+                        <td className="assembly-component">
+                          <div className="font-semibold text-foreground">{row.component_id || "—"}</div>
+                          {row.component_name && row.component_name !== row.component_id && (
+                            <div className="mt-1 text-xs leading-5 text-muted-foreground">{row.component_name}</div>
+                          )}
+                        </td>
+                        <td>{row.component_type || "—"}</td>
+                        <td className="assembly-number">{row.issued_quantity}</td>
+                        <td className="assembly-number text-muted-foreground">{row.returned_quantity}</td>
+                        <td className="assembly-number font-semibold text-emerald-700 dark:text-emerald-400">{row.remaining_quantity}</td>
+                        <td className="assembly-number font-semibold">{formatCurrency(getFinishedAssemblyLineCost(row, selectedRequest))}</td>
+                        <td>
+                          {Array.isArray(row.serial_numbers) && row.serial_numbers.length ? (
+                            <details className="assembly-serials">
+                              <summary>{row.serial_numbers.length} serial{row.serial_numbers.length === 1 ? "" : "s"}</summary>
+                              <div className="assembly-serial-list">
+                                {row.serial_numbers.map((serial, index) => <span key={`${serial}-${index}`}>{serial}</span>)}
+                              </div>
+                            </details>
+                          ) : <span className="text-muted-foreground">—</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+                  {isCompletedNormalAssemblyMr(selectedRequest) && getFinishedAssemblyUnits(selectedRequest).length === 0 && (
+                    <p className="rounded-xl border p-4 text-sm text-muted-foreground">
+                      {assemblyComponentUnitsError || "Finished component details are not available yet. Refresh after the assembly data has loaded."}
+                    </p>
+                  )}
+                  {!isCompletedNormalAssemblyMr(selectedRequest) && !isFromScrapRequest(
                     selectedRequest,
                   ) && (
                   <div className="grid gap-4 md:grid-cols-2">
@@ -20692,7 +21229,7 @@ const getRowsForCurrentTab = () => {
                   </div>
                   )}
 
-                  {!isFromScrapRequest(
+                  {!isCompletedNormalAssemblyMr(selectedRequest) && !isFromScrapRequest(
                     selectedRequest,
                   ) &&
                     getInDroneComponentDetailRows(
@@ -20952,95 +21489,7 @@ const getRowsForCurrentTab = () => {
                     </div>
                   )}
 
-                  {!isFromScrapRequest(selectedRequest) &&
-                  bomDetails && bomDetails.items && bomDetails.items.length > 0 ? (
-                    <div className="overflow-x-auto rounded-3xl border border-border bg-white p-3 shadow-sm dark:border-slate-700 dark:bg-slate-950">
-                      <table className="min-w-full text-sm">
-                        <thead className="bg-slate-100 text-left text-xs uppercase tracking-[0.15em] text-muted-foreground dark:bg-slate-800">
-                          <tr>
-                            <th className="p-3">Component</th>
-                            <th className="p-3">HSN No</th>
-                            <th className="p-3">Category</th>
-                            <th className="p-3 text-right">Qty</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-border">
-                          {bomDetails.items.map((it, i) => (
-                            <tr key={i} className="bg-white dark:bg-slate-900">
-                              <td className="p-3 font-medium text-foreground dark:text-slate-100">
-                                {it.component_name ||
-                                  it.component_code ||
-                                  it.component ||
-                                  it.name ||
-                                  "-"}
-                              </td>
-                              <td className="p-3 text-muted-foreground">
-                                {resolveInventoryHsn(it)}
-                              </td>
-                              <td className="p-3 text-muted-foreground">
-                                {it.category || it.component_category || "-"}
-                              </td>
-                              <td className="p-3 text-right text-foreground">
-                                {it.quantity ?? it.qty ?? it.required_quantity ?? 1}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : rdDetails && (
-                    (Array.isArray(rdDetails.request_items) && rdDetails.request_items.length > 0) ||
-                    (Array.isArray(rdDetails.rd_items) && rdDetails.rd_items.length > 0)
-                  ) ? (
-                    <div className="overflow-x-auto rounded-3xl border border-border bg-white p-3 shadow-sm dark:border-slate-700 dark:bg-slate-950">
-                      <table className="min-w-full text-sm">
-                        <thead className="bg-slate-100 text-left text-xs uppercase tracking-[0.15em] text-muted-foreground dark:bg-slate-800">
-                          <tr>
-                            <th className="p-3">Component</th>
-                            <th className="p-3">HSN No</th>
-                            <th className="p-3">Category</th>
-                            <th className="p-3 text-right">Qty</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-border">
-                          {(
-                            Array.isArray(rdDetails.request_items) && rdDetails.request_items.length > 0
-                              ? rdDetails.request_items
-                              : rdDetails.rd_items
-                          ).map((it, i) => {
-                            const qty = Number(
-                              it.requested_quantity ??
-                                it.required_quantity ??
-                                it.quantity ??
-                                it.qty ??
-                                0,
-                            );
 
-                            return (
-                              <tr key={i} className="bg-white dark:bg-slate-900">
-                                <td className="p-3 font-medium text-foreground dark:text-slate-100">
-                                  {it.component_name || it.componentName || it.component_code || it.component || it.serialNumber || it.serial_number || "-"}
-                                </td>
-                                <td className="p-3 text-muted-foreground">
-                                  {resolveInventoryHsn(it)}
-                                </td>
-                                <td className="p-3 text-muted-foreground">
-                                  {it.category || it.component_category || "-"}
-                                </td>
-                                <td className="p-3 text-right text-foreground">
-                                  {qty}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : isFromScrapRequest(selectedRequest) ? null : (
-                    <div className="rounded-3xl border border-border bg-white p-6 text-center text-sm text-muted-foreground dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">
-                      No details found for this request.
-                    </div>
-                  )}
                 </div>
               </div>
             </InDroneRequestDialog>

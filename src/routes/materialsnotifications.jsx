@@ -5293,6 +5293,50 @@ const handleMrBomClick = async (request) => {
   const poGstTotal = poTotals.gst;
   const poGrandTotal = poTotals.total;
 
+  /*
+   * Displayed MR rows and MR tab count must use the same collection.
+   *
+   * Older releases saved dismissed IDs in localStorage, even though
+   * Procurement's list is rebuilt from current MR records at every refresh.
+   * As a result, the MR badge could say (2), while the table showed (1).
+   *
+   * An unfinished Procurement MR must never be hidden by a stale dismissal.
+   * Keep an explicitly removed PO-raised MR hidden as before.
+   */
+  const visibleMrNotifications = notifications.filter((mr) => {
+    const keys = [mr?.id, mr?.material_request_id, mr?.request_id]
+      .filter((value) => value !== undefined && value !== null && value !== "")
+      .map((value) => String(value).trim());
+    const wasHidden = keys.some((key) => hiddenIds.includes(key));
+
+    if (!wasHidden) return true;
+    if (!isProcurement) return false;
+
+    const hasRaisedPo =
+      mr?.po_raised === true ||
+      mr?.po_raised === 1 ||
+      String(mr?.po_raised ?? "").trim().toLowerCase() === "true";
+
+    if (hasRaisedPo) return false;
+
+    const workflowStatus = String(mr?.status || "")
+      .trim()
+      .toUpperCase();
+
+    if ([
+      "INVENTORY_ISSUED",
+      "MR_COMPLETED",
+      "MANAGER_REJECTED",
+      "REJECTED",
+    ].includes(workflowStatus)) {
+      return false;
+    }
+
+    // MRs reaching this list are already authorized for Procurement.
+    // Restore any active un-ordered shortage, including R&D/Custom BOM.
+    return getRemainingPoShortageRows(mr, existingPurchaseOrders).length > 0;
+  });
+
   return (
     <PageShell>
       <PageHeader
@@ -5313,7 +5357,7 @@ const handleMrBomClick = async (request) => {
               : "border-border bg-background text-muted-foreground hover:text-foreground"
           }`}
         >
-          MR ({notifications.length})
+          MR ({visibleMrNotifications.length})
         </button>
 
         {isProcurement && (
@@ -5362,22 +5406,13 @@ const handleMrBomClick = async (request) => {
     subtitle="Fetching the latest request and workflow details."
   />
 )}
-{!loading && notifications.length === 0 && (
+{!loading && visibleMrNotifications.length === 0 && (
   <div className="p-12 text-center text-slate-500 dark:text-slate-400">
     No pending material requests for this role.
   </div>
 )}
 
-{!loading && notifications
-  .filter(
-    (n) =>
-      !hiddenIds.includes(
-        String(
-          n.id ||
-            n.material_request_id
-        )
-      )
-  )
+{!loading && visibleMrNotifications
   .map((n, index) => {
  const approvalStatus = String(
   n.approval_status || ""
