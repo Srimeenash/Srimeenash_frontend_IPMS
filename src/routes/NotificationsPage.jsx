@@ -279,6 +279,56 @@ const NotificationTableLoader = ({
   </div>
 );
 
+
+// Resolve stale Direct PO manager notifications from the current PO state.
+const resolveDirectPoManagerNotificationStatus = (
+  notificationStatus,
+  po = null,
+) => {
+  const normalizedNotification = String(notificationStatus || "")
+    .trim().toUpperCase();
+
+  // When PO details cannot be fetched, retain the notification status.
+  // The action handler independently checks the PO before writing.
+  if (!po || !po.id) {
+    return normalizedNotification || "PENDING_MANAGER";
+  }
+
+  const workflowStatus = String(po.status || "").trim().toUpperCase();
+  const approvalStatus = String(po.approval_status || "").trim().toUpperCase();
+
+  if (
+    workflowStatus === "MANAGER_REJECTED" ||
+    approvalStatus === "MANAGER_REJECTED"
+  ) {
+    return "MANAGER_REJECTED";
+  }
+
+  if (workflowStatus === "PENDING") {
+    return "PENDING_MANAGER";
+  }
+
+  if (workflowStatus === "REJECTED") {
+    return "REJECTED";
+  }
+
+  // Once Manager approves, this Manager-owned notification is closed,
+  // even when Finance or Procurement has subsequently progressed the PO.
+  if ([
+    "PENDING_FINANCE",
+    "FINANCE_APPROVED",
+    "FINANCE_REJECTED",
+    "APPROVED",
+    "ORDERED",
+    "PARTIALLY_DELIVERED",
+    "DELIVERED",
+  ].includes(workflowStatus)) {
+    return "MANAGER_APPROVED";
+  }
+
+  return workflowStatus || normalizedNotification || "PENDING_MANAGER";
+};
+
 export default function NotificationsPage() {
   const { user, access } = useAuth();
  const role = String(
@@ -873,9 +923,7 @@ const getManagerMrDecisionStatus = (request = {}, notification = {}) => {
   const requestWorkflow = normalize(request?.status);
   const notificationStatus = normalize(notification?.status);
 
-  // A stage-specific Manager decision from the MR *or its own Manager
-  // notification wins over any inconsistent Finance value left on the MR.
-  if ([requestApproval, requestWorkflow, notificationStatus].includes("MANAGER_REJECTED")) {
+  if ([requestApproval, requestWorkflow].includes("MANAGER_REJECTED")) {
     return "MANAGER_REJECTED";
   }
   if ([requestApproval, requestWorkflow].includes("FINANCE_REJECTED")) {
@@ -3276,6 +3324,8 @@ const poNotifications = (
               "PENDING",
               "REQUESTED",
               "PENDING_MANAGER",
+              "MANAGER_APPROVED",
+              "MANAGER_REJECTED",
               "APPROVED",
               "REJECTED",
             ].includes(status)
@@ -3333,11 +3383,12 @@ const poNotifications = (
             n.title ||
             n.reference_id,
           vendor: po?.vendor_name || "-",
-          status: String(
-            n.status ||
-            po?.status ||
-            "PENDING"
-          ).toUpperCase(),
+          // For a Manager-owned Direct PO, the PO itself is authoritative.
+          // A stale PENDING_MANAGER notification must never restore
+          // Approve/Reject after the PO has already been decided.
+          status: isManager
+            ? resolveDirectPoManagerNotificationStatus(n.status, po)
+            : String(n.status || po?.status || "PENDING").toUpperCase(),
           total: Number(po?.total || 0),
           qty:
             po?.qty ||
@@ -5161,6 +5212,30 @@ const rejectDirectPoFromManagerNotification = async (
   }
 
   try {
+    // Never POST a Manager rejection based only on a cached notification.
+    // This preflight also prevents a confusing 400 for an already-rejected PO.
+    const latestPo = await fetchAuthenticatedJson(
+      `${config.baseURL}/procurement/purchase-orders/${encodeURIComponent(
+        poId,
+      )}/`,
+      { cache: "no-store" },
+    );
+    const latestStatus = String(latestPo?.status || "").trim().toUpperCase();
+
+    if (latestStatus !== "PENDING") {
+      await loadNotifications();
+      window.dispatchEvent(new Event("notificationsUpdated"));
+      setShowRejectModal(false);
+      setActiveRejectNotification(null);
+      setRejectReason("");
+      alert(
+        latestStatus === "MANAGER_REJECTED"
+          ? "This Purchase Order was already rejected by the Manager."
+          : `This Purchase Order is no longer pending Manager approval (current status: ${latestStatus || "UNKNOWN"}).`,
+      );
+      return false;
+    }
+
     await fetchAuthenticatedJson(
       `${config.baseURL}/procurement/purchase-orders/${encodeURIComponent(
         poId,
@@ -5189,6 +5264,18 @@ const rejectDirectPoFromManagerNotification = async (
       "Direct PO Manager rejection failed:",
       error,
     );
+
+    // A concurrent approval/rejection can win after preflight. Do not
+    // turn that valid backend guard into an endlessly retryable popup.
+    if (/not pending manager approval/i.test(String(error?.message || ""))) {
+      await loadNotifications();
+      window.dispatchEvent(new Event("notificationsUpdated"));
+      setShowRejectModal(false);
+      setActiveRejectNotification(null);
+      setRejectReason("");
+      alert("This Purchase Order has already moved past Manager approval. The list has been refreshed.");
+      return false;
+    }
 
     alert(
       error?.message ||
@@ -7094,7 +7181,12 @@ if (isInventory) {
                       </>
                     )}
 
-                    {["APPROVED", "REJECTED"].includes(
+                    {[
+                      "APPROVED",
+                      "REJECTED",
+                      "MANAGER_APPROVED",
+                      "MANAGER_REJECTED",
+                    ].includes(
                       String(n.status || "").toUpperCase(),
                     ) && (
                       <button
